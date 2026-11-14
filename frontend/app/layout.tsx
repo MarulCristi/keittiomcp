@@ -3,8 +3,8 @@ import "@fontsource-variable/dm-sans";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Keittiö | Purchasing workspace",
-  description: "Kitchen purchasing, guardrails, and approvals in one workspace.",
+  title: "keittioMCP | Purchasing control centre",
+  description: "Monitor purchase orders, review approvals and manage purchasing policies.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

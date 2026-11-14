@@ -1,0 +1,39 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { canCreateOrder, parseQuantity } from "../app/lib/purchasing.ts";
+
+const available = {
+  name: "Test product", available_quantity: 24, available: true, available_date: null,
+  sales_unit: "carton", sales_block: false, unit_price_cents: 345, currency: "EUR",
+};
+
+test("quantity rejects empty, fractional, negative, exponential and unsafe input", () => {
+  for (const value of ["", "0", "-1", "1.5", "1e3", "Infinity", "10001", "9007199254740992"]) {
+    assert.equal(parseQuantity(value), null, value);
+  }
+  assert.equal(parseQuantity("12"), 12);
+});
+
+test("a confirmed demo lookup permits submission only for its checked quantity", () => {
+  assert.equal(canCreateOrder("demo", false, 12, 12, available), true);
+  assert.equal(canCreateOrder("demo", false, 13, 12, available), false);
+  assert.equal(canCreateOrder("demo", false, null, 12, available), false);
+});
+
+test("samples and disconnected workspaces block orders while supported Junction orders can proceed", () => {
+  assert.equal(canCreateOrder("demo", true, 12, 12, available), false);
+  assert.equal(canCreateOrder(undefined, false, 12, 12, available), false);
+  assert.equal(canCreateOrder("junction", false, 12, 12, available), true);
+});
+
+test("unknown, blocked, unavailable and contradictory shortage results cannot enable orders", () => {
+  for (const result of [null, { ...available, available: null }, { ...available, available: false }, { ...available, sales_block: true }, { ...available, available_quantity: 8 }]) {
+    assert.equal(canCreateOrder("demo", false, 12, 12, result), false);
+  }
+});
+
+test("unconfirmed currency or price cannot silently become a zero-cost EUR order", () => {
+  for (const change of [{ currency: null }, { currency: "USD" }, { unit_price_cents: null }, { unit_price_cents: -1 }, { unit_price_cents: Number.NaN }, { unit_price_cents: Number.MAX_SAFE_INTEGER }]) {
+    assert.equal(canCreateOrder("demo", false, 12, 12, { ...available, ...change }), false);
+  }
+});
