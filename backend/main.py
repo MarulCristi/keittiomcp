@@ -8,8 +8,9 @@ from pydantic import BaseModel
 
 from mcp_server import mcp
 from valio_client import (
-    Allergen, Availability, Guardrails, ProcurementError, ProcurementPlan, Product, ProductId,
-    PurchaseOrder, PurchaseOrderRequest, SearchTerm, Workspace, client,
+    ActivityEvent, AgentExecutionRequest, AgentExecutionResult, AgentProfile, AgentUpdate,
+    Allergen, Availability, Guardrails, PriorityMode, ProcurementError, ProcurementPlan,
+    Product, ProductId, PurchaseOrder, PurchaseOrderRequest, SearchTerm, Workspace, client,
 )
 
 mcp_app = mcp.http_app(path="/mcp", stateless_http=True, json_response=True)
@@ -31,8 +32,8 @@ async def procurement_error(_request: Request, exc: ProcurementError):
 
 
 @app.get("/api/search_products")
-def search_products(query: SearchTerm) -> list[Product]:
-    return client.search_products(query)
+def search_products(query: SearchTerm, priority_mode: PriorityMode | None = None) -> list[Product]:
+    return client.search_products(query, priority_mode=priority_mode)
 
 
 @app.get("/api/check_availability")
@@ -49,9 +50,14 @@ def suggest_substitutes(
     exclude_allergens: Annotated[list[Allergen] | None, Query(max_length=6)] = None,
     requested_date: date | None = None,
     enrich_live: bool = True,
+    priority_mode: PriorityMode | None = None,
 ) -> list[Product]:
     return client.suggest_substitutes(
-        product_id, exclude_allergens or [], requested_date=requested_date, enrich_live=enrich_live
+        product_id,
+        exclude_allergens or [],
+        requested_date=requested_date,
+        enrich_live=enrich_live,
+        priority_mode=priority_mode,
     )
 
 
@@ -61,8 +67,11 @@ def plan_procurement(
     target_volume_liters_or_kg: Annotated[float, Query(gt=0, le=100_000)] = 1000.0,
     requested_date: date | None = None,
     exclude_allergens: Annotated[list[Allergen] | None, Query(max_length=6)] = None,
+    priority_mode: PriorityMode | None = None,
 ) -> ProcurementPlan:
-    return client.plan_procurement(query, target_volume_liters_or_kg, requested_date, exclude_allergens)
+    return client.plan_procurement(
+        query, target_volume_liters_or_kg, requested_date, exclude_allergens, priority_mode=priority_mode
+    )
 
 
 @app.post("/api/create_purchase_order", status_code=201)
@@ -87,6 +96,26 @@ class OrderDecision(BaseModel):
 @app.patch("/api/orders/{order_id}")
 def decide_order(order_id: str, body: OrderDecision) -> PurchaseOrder:
     return client.decide_order(order_id, body.decision)
+
+
+@app.get("/api/agents")
+def list_agents() -> list[AgentProfile]:
+    return client.list_agents()
+
+
+@app.put("/api/agents/{agent_id}")
+def update_agent(agent_id: str, body: AgentUpdate) -> AgentProfile:
+    return client.update_agent(agent_id, body)
+
+
+@app.get("/api/events")
+def list_events() -> list[ActivityEvent]:
+    return client.list_events()
+
+
+@app.post("/api/agent_execute")
+def agent_execute(request: AgentExecutionRequest) -> AgentExecutionResult:
+    return client.execute_trade_request(request)
 
 
 app.mount("/", mcp_app)
