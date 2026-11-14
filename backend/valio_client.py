@@ -86,6 +86,172 @@ SUSTAINABILITY_LABEL_MAP: dict[str, str] = {
     "PUHTAASTI_KOTIMAINEN": "100% Finnish Domestic",
 }
 
+SALES_UNIT_LABELS: dict[str, str] = {
+    "KI": "Case/KI",
+    "ST": "Unit/ST",
+    "KG": "KG",
+    "PAK": "Box/PAK",
+    "BAG": "Bag/BAG",
+    "RAS": "Tub/RAS",
+    "PRK": "Carton/PRK",
+    "BOT": "Bottle/BOT",
+    "SK": "Sack/SK",
+    "PAL": "Pallet/PAL",
+}
+
+# Step 1 Category Router: Dish / Prepared Food categories (checked first when query mentions a dish)
+DISH_CATEGORY_ROUTES: list[tuple[set[str], set[str]]] = [
+    ({"soup", "soups", "keitto", "lohikeitto", "hernekeitto"}, {"17300", "21900", "21901", "21510", "21402"}),
+    ({"pie", "pies", "pasty", "pasties", "piirakka", "pasteija"}, {"41762", "41765", "10903"}),
+    ({"salad", "salads", "salaatti", "perunasalaatti", "coleslaw"}, {"17301", "21592"}),
+    (
+        {"burger", "burgers", "patty", "patties", "pihvi", "meatball", "meatballs", "lihapulla", "fishball", "kalapihvi"},
+        {"41705", "41712", "41723", "41752", "18761"},
+    ),
+    ({"pizza", "lasagne", "casserole", "laatikko", "risotto"}, {"17300", "17302", "41755"}),
+    ({"sandwich", "sandwiches", "sämpylä", "wrap"}, {"17303"}),
+    (
+        {"sauce", "sauces", "kastike", "mayonnaise", "majoneesi", "ketchup", "ketsuppi", "dressing", "salsa"},
+        {"21904", "21905", "21910", "21912", "21917", "21918", "21919", "21920", "21921", "21994"},
+    ),
+    ({"bouillon", "fond", "stock", "liemi"}, {"21902", "21903"}),
+    ({"icecream", "jäätelö", "gelato", "sorbet"}, {"41800", "41801", "41820"}),
+    (
+        {"chocolate", "suklaa", "candy", "candies", "karkki", "confectionery", "praline", "truffle", "lollipop", "pastille"},
+        {"52200", "52201", "52202", "52208", "52209", "52210", "52240", "52260", "52290", "22540"},
+    ),
+    ({"cake", "cakes", "kakku", "muffin", "muffins", "pastry", "cinnamon", "pulla", "donut"}, {"11030", "41763", "41764"}),
+    ({"babyfood", "baby", "lastenateria", "piltti"}, {"21600"}),
+    ({"powder", "jauhe", "milkpowder", "maitojauhe"}, {"10405", "21980"}),
+]
+
+# Step 1 Category Router: Raw / Core Ingredient categories (used when no prepared dish word is in the query)
+INGREDIENT_CATEGORY_ROUTES: list[tuple[set[str], set[str]]] = [
+    (
+        {
+            "salmon", "lohi", "lohifilee", "kirjolohi", "trout", "cod", "turska", "hake", "herring",
+            "silakka", "anchovy", "anjovis", "whitefish", "siika", "pike", "perch", "ahven", "mackerel",
+            "redfish", "vendace", "muikku", "fish", "kala",
+        },
+        {"18701", "18702", "18705", "18706", "18707", "18708", "41720", "21530"},
+    ),
+    (
+        {
+            "crayfish", "rapu", "täplärapu", "crawfish", "shrimp", "shrimps", "katkarapu", "prawn",
+            "prawns", "mussel", "mussels", "simpukka", "clam", "octopus", "mustekala", "seafood", "shellfish",
+        },
+        {"18703", "41721"},
+    ),
+    ({"roe", "mäti", "caviar"}, {"18704", "41722"}),
+    (
+        {"oat", "kaura", "soy", "soya", "soija", "coconut", "kookos", "almond", "plant"},
+        {"10401", "10402", "10406", "10413", "10418"},
+    ),
+    (
+        {"cream", "kerma", "ruokakerma", "kuohukerma", "whipping", "fraiche", "fraîche"},
+        {"10401", "10406", "10418", "10419"},
+    ),
+    (
+        {"milk", "maito", "kevytmaito", "maitojuoma", "kevytmaitojuoma", "skimmed"},
+        {"10400"},
+    ),
+    ({"yoghurt", "yogurt", "jogurtti", "quark", "rahka", "viili"}, {"10411", "10412", "10430"}),
+    (
+        {"butter", "voi", "margarine", "margariini", "oivariini"},
+        {"10500", "10501", "10502", "10515", "10516", "10518"},
+    ),
+    ({"oil", "öljy", "oliveoil", "rapeseed", "frying"}, {"10517", "10530", "10531", "10532"}),
+    ({"egg", "eggs", "kananmuna", "munia"}, {"10590", "10592"}),
+    (
+        {"cheese", "juusto", "feta", "mozzarella", "halloumi", "cheddar", "edam", "gouda", "parmesan", "aura", "oltermanni", "cottage"},
+        {"10600", "10602", "10603", "10630", "10631", "10632", "10633", "10635", "10636", "10637", "10639", "10640", "41771"},
+    ),
+    (
+        {"bread", "leipä", "loaf", "vuokaleipä", "sourdough", "rye", "ruisleipä", "roll", "rolls", "toast", "crispbread", "näkkileipä"},
+        {"10900", "10901", "10902", "21200", "21211", "41760", "41761"},
+    ),
+    (
+        {"chicken", "kana", "broileri", "turkey", "kalkkuna", "duck", "ankka", "poultry"},
+        {"18750", "18751", "41710", "41711", "17204", "17209"},
+    ),
+    (
+        {"beef", "nauta", "naudan", "rib", "brisket", "tenderloin", "sirloin", "minced", "jauheliha", "roast"},
+        {"18720", "18760", "18761", "41702", "41703", "17205", "17210"},
+    ),
+    (
+        {"pork", "possu", "porsas", "ham", "kinkku", "bacon", "pekoni", "sausage", "sausages", "makkara", "frankfurter", "bratwurst", "salami"},
+        {"18710", "41701", "17200", "17201", "17202", "17203", "17206", "17209"},
+    ),
+    ({"lamb", "karitsa", "lammas", "reindeer", "poro"}, {"18730", "18740", "41703", "41704", "17210"}),
+    (
+        {
+            "potato", "potatoes", "peruna", "tomato", "tomatoes", "tomaatti", "cucumber", "kurkku",
+            "lettuce", "cabbage", "kaali", "onion", "sipuli", "carrot", "porkkana", "mushroom",
+            "mushrooms", "sieni", "chanterelle", "garlic", "fries", "ranskalaiset",
+        },
+        {
+            "17401", "17402", "17403", "17404", "17405", "17406", "17407", "17408",
+            "41731", "41732", "41734", "41750", "41751", "21550", "21590", "21591", "21593", "21595", "21596",
+        },
+    ),
+    (
+        {"pasta", "macaroni", "makaroni", "spaghetti", "fusilli", "noodle", "noodles", "rice", "riisi", "flour", "jauho", "flakes", "hiutale", "quinoa"},
+        {"21300", "21310", "21320", "21340", "21360", "21370", "21371", "21372", "21373", "21380", "21381", "21382", "17304", "41755"},
+    ),
+]
+
+
+def _resolve_target_categories(terms: list[str], raw_query: str) -> set[str] | None:
+    """Route a search query to the appropriate Valio Aimo 5-digit categories.
+
+    1. If a prepared dish keyword ('soup', 'pie', 'salad', 'burger', 'ice cream', etc.) is present,
+       route to that dish's categories.
+    2. Otherwise, if a raw ingredient keyword ('salmon', 'milk', 'chicken', 'crayfish', etc.) is present,
+       route strictly to the raw ingredient's categories so pies/babyfood/soups are excluded.
+    """
+    term_set = set(terms)
+    low_query = raw_query.casefold()
+    if "ice cream" in low_query or "ice-cream" in low_query:
+        term_set.add("icecream")
+    if "milk powder" in low_query:
+        term_set.add("milkpowder")
+
+    for dish_words, dish_cats in DISH_CATEGORY_ROUTES:
+        if term_set & dish_words:
+            return dish_cats
+
+    matched_ingredient_cats: set[str] = set()
+    for ing_words, ing_cats in INGREDIENT_CATEGORY_ROUTES:
+        if term_set & ing_words:
+            matched_ingredient_cats |= ing_cats
+
+    return matched_ingredient_cats or None
+
+
+def _compute_purity_tier(name_en: str, name_fi: str, key_ingredients_text: str) -> int:
+    """Score ingredient purity inside a category:
+    0 = Pure cut / single ingredient (e.g. 'SALMON', 'fillet', 'whole', 'sliced', 'milk drink')
+    1 = Standard product in category
+    2 = Processed/composite item that was placed in a raw category (e.g. 'salmonburger', 'breaded', 'patty')
+    """
+    combined = f"{name_en} {name_fi}".casefold()
+    processed_markers = (
+        "burger", "pihvi", "patty", "ball", "pulla", "nugget", "schnitzel", "leike",
+        "breaded", "paneroitu", "pie", "piirakka", "pasty", "babyfood", "lastenateria",
+        "casserole", "laatikko", "soup", "keitto", "pizza", "sandwich",
+    )
+    if any(m in combined for m in processed_markers):
+        return 2
+
+    pure_markers = ("fillet", "filee", "file", "whole", "kokonainen", "sliced", "siivutettu", "c-cut", "novobox", "uht", "luomu", "organic")
+    # Check if keyIngredients is a single pure ingredient (no commas)
+    clean_ing = key_ingredients_text.strip()
+    is_single_ingredient = bool(clean_ing and "," not in clean_ing and len(clean_ing) < 45)
+    if is_single_ingredient or any(m in combined for m in pure_markers):
+        return 0
+
+    return 1
+
 
 class Product(BaseModel):
     product_id: ProductId
@@ -106,6 +272,7 @@ class Product(BaseModel):
     net_volume_liters_or_kg: float | None = None
     comparison_price_cents: int | None = None
     comparison_unit: str | None = None
+    purity_tier: int = 1
     substitute_tier: SubstituteTier | None = None
     substitute_reason: str | None = None
 
@@ -223,43 +390,45 @@ class ProcurementError(Exception):
 
 
 def _extract_volume_and_unit(raw: dict[str, Any], name_en: str, name_fi: str) -> tuple[float | None, Literal["L", "kg"]]:
-    """Extract net volume/weight in L or kg per salesUnit and its canonical dimension ('L' or 'kg')."""
+    """Extract net volume/weight in L or kg per salesUnit using built-in JSON fields first.
+
+    Priority order:
+    1. If salesUnit is 'KG' or 'L', 1 sales unit is literally 1.0 kg or 1.0 L.
+    2. Built-in synkkaData.unitConversions[].netWeight or volume (multiplied by sizeInBaseUnits ONLY when
+       salesUnit != baseUnit and synkkaPackagingType != 'CASE').
+    3. Title regex fallback ONLY when unitConversions has no netWeight/volume (taking the largest/package weight
+       when a slash like '65 g / 5,4 kg' is present).
+    """
+    sales_unit = str(raw.get("salesUnit") or "").strip().upper()
+    base_unit = str(raw.get("baseUnit") or "").strip().upper()
+    if sales_unit == "KG":
+        return 1.0, "kg"
+    if sales_unit in ("L", "LTR"):
+        return 1.0, "L"
+
     synkka = raw.get("synkkaData") or {}
-    sales_unit = raw.get("salesUnit") or ""
     units = raw.get("units") or []
     multiplier = 1.0
-    for u in units:
-        if u.get("unitId") == sales_unit and u.get("sizeInBaseUnits"):
-            try:
-                multiplier = float(u["sizeInBaseUnits"])
-            except (TypeError, ValueError):
-                multiplier = 1.0
-            break
+    if sales_unit and base_unit and sales_unit != base_unit:
+        for u in units:
+            if str(u.get("unitId") or "").strip().upper() == sales_unit and u.get("sizeInBaseUnits"):
+                try:
+                    multiplier = float(u["sizeInBaseUnits"])
+                except (TypeError, ValueError):
+                    multiplier = 1.0
+                break
 
-    text = f"{name_en} {name_fi}"
-    # If the title already specifies a multi-pack (e.g. "100x2 cl" or "70x18g"), that already represents the case total
-    multi_match = re.search(r"(\d+)\s*[xX×]\s*(\d+(?:[.,]\d+)?)\s*(kg|g|l|dl|ml|cl)\b", text, re.IGNORECASE)
-    if multi_match:
-        count = float(multi_match.group(1))
-        amt = float(multi_match.group(2).replace(",", "."))
-        unit_str = multi_match.group(3).lower()
-        factor = {"kg": 1.0, "l": 1.0, "g": 0.001, "ml": 0.001, "dl": 0.1, "cl": 0.01}[unit_str]
-        dim: Literal["L", "kg"] = "L" if unit_str in ("l", "dl", "ml", "cl") else "kg"
-        return round(count * amt * factor, 3), dim
-
-    # Single base-unit size in title (e.g. "1 l", "10 l novobox", "400g") multiplied by salesUnit sizeInBaseUnits
-    single_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(kg|g|l|dl|ml)\b", text, re.IGNORECASE)
-    if single_match:
-        amt = float(single_match.group(1).replace(",", "."))
-        unit_str = single_match.group(2).lower()
-        factor = {"kg": 1.0, "l": 1.0, "g": 0.001, "ml": 0.001, "dl": 0.1}[unit_str]
-        dim = "L" if unit_str in ("l", "dl", "ml") else "kg"
-        return round(amt * factor * multiplier, 3), dim
-
+    # Priority 2: Built-in synkkaData.unitConversions netWeight / volume
     for conv in synkka.get("unitConversions") or []:
         is_case = str(conv.get("synkkaPackagingType") or "").upper() == "CASE"
         conv_mult = 1.0 if is_case else multiplier
-        for field_name in ("volume", "netWeight"):
+        # Prefer volume when given in liquid units (LTR/MLT/DLT), otherwise use netWeight/volume
+        vol_measure = conv.get("volume")
+        if isinstance(vol_measure, dict) and str(vol_measure.get("unit", "")).upper() in ("LTR", "L", "MLT", "ML", "DLT", "DL"):
+            field_order = ("volume", "netWeight")
+        else:
+            field_order = ("netWeight", "volume")
+        for field_name in field_order:
             measure = conv.get(field_name)
             if isinstance(measure, dict) and measure.get("value") is not None:
                 unit_code = str(measure.get("unit", "")).upper()
@@ -277,6 +446,33 @@ def _extract_volume_and_unit(raw: dict[str, Any], name_en: str, name_fi: str) ->
                     return round((val / 1000.0) * conv_mult, 3), "kg"
                 if unit_code in ("DLT", "DL") and val > 0:
                     return round((val / 10.0) * conv_mult, 3), "L"
+
+    # Priority 3: Title regex fallback (only when built-in unitConversions had no netWeight/volume)
+    text = f"{name_en} {name_fi}"
+    multi_match = re.search(r"(\d+)\s*[xX×*]\s*(\d+(?:[.,]\d+)?)\s*(kg|g|l|dl|ml|cl)\b", text, re.IGNORECASE)
+    if multi_match:
+        count = float(multi_match.group(1))
+        amt = float(multi_match.group(2).replace(",", "."))
+        unit_str = multi_match.group(3).lower()
+        factor = {"kg": 1.0, "l": 1.0, "g": 0.001, "ml": 0.001, "dl": 0.1, "cl": 0.01}[unit_str]
+        dim: Literal["L", "kg"] = "L" if unit_str in ("l", "dl", "ml", "cl") else "kg"
+        return round(count * amt * factor, 3), dim
+
+    # Find all single measurements in title; if multiple exist (e.g. "65 g / 5,4 kg"), pick the largest total weight
+    all_matches = re.findall(r"(?<![xX×*\d])(\d+(?:[.,]\d+)?)\s*(kg|g|l|dl|ml)\b", text, re.IGNORECASE)
+    if all_matches:
+        best_val = 0.0
+        best_dim: Literal["L", "kg"] = "kg"
+        for amt_str, unit_str in all_matches:
+            amt = float(amt_str.replace(",", "."))
+            u_low = unit_str.lower()
+            factor = {"kg": 1.0, "l": 1.0, "g": 0.001, "ml": 0.001, "dl": 0.1}[u_low]
+            normalized = amt * factor
+            if normalized > best_val:
+                best_val = normalized
+                best_dim = "L" if u_low in ("l", "dl", "ml") else "kg"
+        if best_val > 0:
+            return round(best_val * multiplier, 3), best_dim
 
     return None, "kg"
 
@@ -364,10 +560,18 @@ def _parse_synkka_product(
     allergens_set -= free_from_allergens
 
     vol, unit_suffix = _extract_volume_and_unit(raw, name_en, name_fi or "")
-    unit_display = sales_unit
+    pretty_sales_unit = SALES_UNIT_LABELS.get(sales_unit.upper(), sales_unit)
+    unit_display = pretty_sales_unit
     if vol is not None:
         vol_fmt = f"{int(vol)}" if vol == int(vol) else f"{vol:g}"
-        unit_display = f"{sales_unit} ({vol_fmt} {unit_suffix})"
+        unit_display = f"{pretty_sales_unit} ({vol_fmt} {unit_suffix})"
+
+    key_ings = synkka.get("keyIngredients") or []
+    key_ing_en = next(
+        (str(k.get("value") or "") for k in key_ings if isinstance(k, dict) and k.get("language") == "en"),
+        str(key_ings[0].get("value") or "") if key_ings and isinstance(key_ings[0], dict) else "",
+    )
+    purity_tier = _compute_purity_tier(name_en, name_fi or "", key_ing_en)
 
     explicit_subs: list[str] = []
     for sub in raw.get("substitutions") or []:
@@ -388,6 +592,7 @@ def _parse_synkka_product(
         delivery_reliability=reliability_map.get(pid),
         carbon_footprint_kg=carbon_map.get(pid),
         net_volume_liters_or_kg=vol,
+        purity_tier=purity_tier,
     )
     return product, explicit_subs
 
@@ -816,13 +1021,14 @@ def _rank_substitutes_good_better_best(
     def score_best(p: Product) -> tuple:
         in_stock = 1 if (p.stock is None or p.stock > 0) else 0
         cand_text = f"{p.name} {p.name_fi or ''}".casefold()
-        name_sim = 1 if (not orig_tokens or any(tok in cand_text for tok in orig_tokens)) else 0
+        name_sim = sum(1 for tok in orig_tokens if tok in cand_text) if orig_tokens else 1
+        purity_inv = -p.purity_tier
         same_claims = len(set(original.dietary_claims or []) & set(p.dietary_claims or []))
         rel = p.delivery_reliability if p.delivery_reliability is not None else 0.85
         co2_inv = -(p.carbon_footprint_kg if p.carbon_footprint_kg is not None else 50.0)
         labels_cnt = len(p.sustainability_labels or [])
         price_inv = -(p.comparison_price_cents or p.unit_price_cents or 999999)
-        return (in_stock, name_sim, same_claims, round(rel, 3), round(co2_inv, 2), labels_cnt, price_inv)
+        return (in_stock, name_sim > 0, purity_inv, name_sim, same_claims, round(rel, 3), round(co2_inv, 2), labels_cnt, price_inv)
 
     ranked = sorted(candidates, key=score_best, reverse=True)
     result: list[Product] = []
@@ -986,34 +1192,60 @@ class ValioClient:
 
         if self.supplier:
             catalog = self.supplier.catalog()
-            matches: list[Product] = []
-            wants_milk_only = "milk" in terms and not any(w in terms for w in ("chocolate", "ice", "powder", "porridge", "bread"))
-            for product in catalog:
-                if required_claims and not all(c in (product.dietary_claims or []) for c in required_claims):
-                    continue
-                searchable = f"{product.product_id} {product.name} {product.name_fi or ''} {product.category} {product.vendor or ''}".casefold()
-                # Avoid matching 'milk' inside 'milk-free' or 'milk free'
-                searchable_for_terms = re.sub(r"\bmilk[-\s]free\b", "dairy_excluded", searchable) if "milk" in terms else searchable
-                if all(term in searchable_for_terms for term in terms):
-                    matches.append(product)
+            target_categories = _resolve_target_categories(terms, cleaned)
+            try:
+                with self.transaction() as db:
+                    restricted_allergens = set(self.guardrails(db).review_allergens)
+            except Exception:
+                restricted_allergens = set()
+
+            def collect_matches(enforce_categories: bool, enforce_allergens: bool) -> list[Product]:
+                found: list[Product] = []
+                for product in catalog:
+                    if enforce_categories and target_categories and product.category not in target_categories:
+                        continue
+                    if required_claims and not all(c in (product.dietary_claims or []) for c in required_claims):
+                        continue
+                    if enforce_allergens and restricted_allergens and not restricted_allergens.isdisjoint(product.allergens or []):
+                        # Only filter out guardrail allergens if the user didn't explicitly ask for that allergen
+                        if not any(a in cleaned for a in restricted_allergens):
+                            continue
+                    searchable = f"{product.product_id} {product.name} {product.name_fi or ''} {product.category} {product.vendor or ''}".casefold()
+                    searchable_for_terms = re.sub(r"\bmilk[-\s]free\b", "dairy_excluded", searchable) if "milk" in terms else searchable
+                    if all(term in searchable_for_terms for term in terms):
+                        found.append(product)
+                return found
+
+            # Step 1 & 2: Try strict category routing + guardrail allergen safety first
+            matches = collect_matches(enforce_categories=True, enforce_allergens=True)
+            if not matches and target_categories:
+                # Fallback if all items in the category contain a restricted allergen (e.g. wheat bread when gluten is restricted)
+                matches = collect_matches(enforce_categories=True, enforce_allergens=False)
+            if not matches:
+                # Fallback to full catalog if custom/SKU query didn't match target_categories
+                matches = collect_matches(enforce_categories=False, enforce_allergens=True)
+            if not matches:
+                matches = collect_matches(enforce_categories=False, enforce_allergens=False)
+
+            asked_for_processed = any(
+                w in terms for w in ("burger", "burgers", "patty", "pihvi", "pie", "piirakka", "soup", "keitto", "ball", "meatball")
+            )
 
             def rank_key(item: Product) -> tuple:
                 exact_id = 0 if item.product_id.casefold() == query.strip().casefold() else 1
-                name_low = item.name.casefold()
-                # If user asked for milk, put fresh/UHT milk category (10400) first and de-prioritize chocolate/candy/ice cream
-                category_boost = 0
-                if wants_milk_only:
-                    if item.category == "10400" and not any(b in name_low for b in ("chocolate", "cocoa", "coffee")):
-                        category_boost = -2
-                    elif item.category == "10400":
-                        category_boost = -1
-                    elif any(b in name_low for b in ("chocolate", "ice cream", "truffle", "candy", "wafer", "biscuit")):
-                        category_boost = 2
+                has_restricted_allergen = (
+                    0 if restricted_allergens.isdisjoint(item.allergens or []) else 1
+                )
+                # Step 3: Ingredient purity (pure fillets/cuts/single-ingredient first unless user asked for burger/pie/soup)
+                purity = 0 if asked_for_processed else item.purity_tier
+                # Prefer whole-word match of the search terms in the product name (e.g. 'salmon' over 'salmonburger')
+                name_words = set(re.findall(r"[a-zäöå0-9]+", f"{item.name} {item.name_fi or ''}".casefold()))
+                whole_word_match = 0 if all(t in name_words for t in terms) else 1
                 has_rel = 0 if item.delivery_reliability is not None else 1
                 rel = -(item.delivery_reliability if item.delivery_reliability is not None else 0.0)
                 co2 = item.carbon_footprint_kg if item.carbon_footprint_kg is not None else 999.0
                 vol_boost = -(item.net_volume_liters_or_kg or 0.0) if "1000" in query else 0.0
-                return (exact_id, category_boost, vol_boost, has_rel, rel, co2)
+                return (exact_id, has_restricted_allergen, purity, whole_word_match, vol_boost, has_rel, rel, co2)
 
             matches.sort(key=rank_key)
             return matches[:25]
@@ -1110,6 +1342,8 @@ class ValioClient:
             candidates.sort(
                 key=lambda p: (
                     0 if p.product_id in explicit_ids else 1,
+                    0 if sub_similarity(p) > 0 else 1,
+                    p.purity_tier,
                     -sub_similarity(p),
                     -(p.delivery_reliability if p.delivery_reliability is not None else 0.0),
                     p.carbon_footprint_kg if p.carbon_footprint_kg is not None else 999.0,
