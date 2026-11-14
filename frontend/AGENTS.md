@@ -6,6 +6,12 @@
 - The user is a first-time developer. Explain changes in plain language, provide concrete preview/testing steps, and clearly distinguish implemented behavior from proposals and sample-data previews from integrated behavior.
 - The deadline stated on 14 November 2026 is tomorrow morning. Favor a small, reliable demonstration over additional features. Reconfirm timing if working after that deadline.
 
+# Visual identity
+
+- Keep the product name KeittiöMCP. Use the exact user palette values in `app/palette.css`; do not introduce replacement colors.
+- Use Londrina Solid for headings and Libre Franklin for other text. Preserve the supplied logo and the four Tabler dashboard icons.
+- Use drop shadows instead of outlines on cards, with navy navigation and orange accents. Keep visual changes separate from purchasing behavior.
+
 # Challenge requirements
 
 The objective is an open interface and operating model through which an external purchasing agent can interact with a wholesaler. A chatbot or attractive catalog alone does not satisfy the challenge.

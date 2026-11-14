@@ -11,6 +11,7 @@ import { ThinkingOrb, type OrbState } from "@/components/ui/thinking-orbs";
 import OrderReview from "./components/order-review";
 import RequestPlanner from "./components/request-planner";
 import AgentManagement from "./components/agent-management";
+import { AgentIcon, CartIcon, ApprovalIcon, ApprovedIcon } from "./components/dashboard-icons";
 import { createBrowserPreview, type ActivityEvent, type Agent } from "./lib/browser-preview";
 import { api, errorMessage, money, orderRequester, sampleProducts, statusLabels, type AgentExecutionResult, type Availability, type Guardrails, type Order, type PriorityMode, type Product } from "./lib/purchasing";
 
@@ -468,10 +469,10 @@ export default function Dashboard() {
 
         {view === "overview" && <div className="control-content overview-content">
           <dl className="metric-grid">
-            <div className="panel metric-card"><div className="metric-icon sky"><Bot size={28} aria-hidden="true" /></div><dt>Connected agents</dt><dd>{preview || workspace ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : workspace ? "Verified external trade agents" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
-            <div className="panel metric-card"><div className="metric-icon blue"><ShoppingBasket size={28} aria-hidden="true" /></div><dt>Orders updated today</dt><dd>{workspace ? changedToday : "—"}</dd><small>Helsinki time</small><button type="button" className="text-button" onClick={() => setView("activity")}>View activity <ArrowRight size={16} /></button></div>
-            <div className="panel metric-card"><div className="metric-icon coral"><ClipboardList size={28} aria-hidden="true" /></div><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><small>{pending.length ? "A decision needs your attention" : "No pending decisions"}</small><button type="button" className="primary-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={16} /></button></div>
-            <div className="panel metric-card"><div className="metric-icon teal"><Check size={28} aria-hidden="true" /></div><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small><button type="button" className="text-button" onClick={() => setView("policies")}>View policies <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon sky"><AgentIcon /></div><dt>Connected agents</dt><dd>{preview || workspace ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : workspace ? "Verified external trade agents" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon blue"><CartIcon /></div><dt>Orders updated today</dt><dd>{workspace ? changedToday : "—"}</dd><small>Helsinki time</small><button type="button" className="text-button" onClick={() => setView("activity")}>View activity <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon turquoise"><ApprovalIcon /></div><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><small>{pending.length ? "A decision needs your attention" : "No pending decisions"}</small><button type="button" className="primary-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon orange"><ApprovedIcon /></div><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small><button type="button" className="text-button" onClick={() => setView("policies")}>View policies <ArrowRight size={16} /></button></div>
           </dl>
         </div>}
 

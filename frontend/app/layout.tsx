@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
-import "@fontsource-variable/dm-sans";
+import "@fontsource/londrina-solid/400.css";
+import "@fontsource-variable/libre-franklin";
 import "./globals.css";
+import "./palette.css";
 import "./brand.css";
 
 export const metadata: Metadata = {

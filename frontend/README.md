@@ -1,6 +1,6 @@
 # KeittiöMCP frontend quick start
 
-The interface uses the supplied Keittiö wordmark, navy/teal/blue palette and coral action colour (`#F47C62`). Shared visual styling is in `app/brand.css`; the original logo assets are in `public/branding/`. The header stays white, and all six screens use the same responsive design. Technical package names and folder paths remain ASCII.
+The interface uses the supplied Keittiö wordmark and exact navy, sky blue, electric blue, turquoise, orange and slate palette in `app/palette.css`. Headings use Londrina Solid; other text uses Libre Franklin, both served locally. `app/brand.css` applies a navy navigation bar and shadowed cards across all six screens. The four dashboard SVG icons use the supplied Tabler paths. Original logo assets are in `public/branding/`. Technical package names and folder paths remain ASCII.
 
 Open a new PowerShell window and run:
 
