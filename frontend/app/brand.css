@@ -530,10 +530,19 @@ button:disabled { opacity: .5; }
 .side-clock-card { padding: 14px 18px; background: var(--surface); border: 0; }
 .side-clock-card.is-future { background: linear-gradient(135deg, var(--sky-50) 0%, var(--surface) 100%); }
 .side-clock-card.is-slowing { background: linear-gradient(135deg, #fef3c7 0%, var(--surface) 100%); }
+.side-clock-row { display: flex; align-items: center; gap: 8px; }
 .side-clock-trigger {
-  width: 100%; display: flex; align-items: center; gap: 11px; padding: 0; border: 0;
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 11px; padding: 0; border: 0;
   background: transparent; text-align: left; cursor: pointer; color: var(--ink);
 }
+.side-clock-reset-btn {
+  display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0;
+  border: 0; border-radius: 7px; background: var(--slate-100); color: var(--slate-600);
+  cursor: pointer; transition: background .15s ease, color .15s ease;
+}
+.side-clock-reset-btn.is-active { background: var(--tint); color: var(--accent-dark); }
+.side-clock-reset-btn:hover:not(:disabled) { background: var(--sky-100); color: var(--navy-800); }
+.side-clock-reset-btn:disabled { opacity: .45; cursor: default; }
 .side-clock-icon {
   display: grid; place-items: center; width: 32px; height: 32px; border-radius: 7px;
   background: var(--tint); color: var(--accent-dark); flex-shrink: 0;

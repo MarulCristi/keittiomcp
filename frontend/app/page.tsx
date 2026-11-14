@@ -3,7 +3,7 @@
 import {
   ArrowDownUp, ArrowRight, ArrowUp, Award, Bot, CalendarClock, Check, ChevronDown, CircleHelp, ClipboardList,
   Clock, Egg, FastForward, Fish, History, LayoutDashboard, Leaf, Maximize2, Milk, Minimize2, Moon, Nut, Pause, Play,
-  Plus, RefreshCw, Search, ShieldCheck, ShoppingBasket, Sparkles, SlidersHorizontal, Square, Sun,
+  Plus, RefreshCw, RotateCcw, Search, ShieldCheck, ShoppingBasket, Sparkles, SlidersHorizontal, Square, Sun,
   Tag, Trash2, Wheat,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
@@ -200,6 +200,7 @@ export default function Dashboard() {
   const [isChatFullscreen, setIsChatFullscreen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const clockTickBusy = useRef(false);
+  const clockSeqRef = useRef(0);
   const visualExtraMsRef = useRef(0);
   const scheduleStateRef = useRef<ScheduleWorkspaceState | null>(null);
   const prefsBootstrapped = useRef(false);
@@ -371,17 +372,25 @@ export default function Dashboard() {
   }
 
   async function advanceClock(options: { days?: number; hours?: number; minutes?: number; seconds?: number; jump_to_next_schedule?: boolean; reset?: boolean }) {
-    if (activeAction || sending || clockTickBusy.current) return;
+    if (activeAction || sending || (!options.reset && clockTickBusy.current)) return;
+    const reqId = ++clockSeqRef.current;
     clockTickBusy.current = true;
     setActionError("");
+    if (options.reset) {
+      setIsFastForwarding(false);
+      visualExtraMsRef.current = 0;
+      setVisualSimNowMs(Date.now());
+    }
     try {
       const res = await request<ClockAdvanceResponse>("clock/advance", "POST", options);
+      if (reqId !== clockSeqRef.current) return;
       const nextState: ScheduleWorkspaceState = { simulated_now: res.simulated_now, real_now: res.real_now, offset_seconds: res.offset_seconds, rules: res.rules };
       scheduleStateRef.current = nextState;
       setScheduleState(nextState);
       if (options.reset) {
         setIsFastForwarding(false);
         visualExtraMsRef.current = 0;
+        setVisualSimNowMs(Date.now() + res.offset_seconds * 1000);
       }
       if (res.executed_runs.length > 0) {
         const newMessages: Message[] = res.executed_runs.map((run) => ({
@@ -1271,30 +1280,42 @@ export default function Dashboard() {
                   className={`panel side-clock-card ${scheduleState.offset_seconds > 0 ? "is-future" : ""} ${isFastForwarding ? "is-fast" : ""} ${slowingForRule ? "is-slowing" : ""}`}
                   aria-label="Simulation clock controller"
                 >
-                  <button
-                    type="button"
-                    className="side-clock-trigger"
-                    aria-expanded={clockOpen}
-                    onClick={() => setClockOpen((v) => !v)}
-                  >
-                    <span className="side-clock-icon"><Clock size={16} /></span>
-                    <div className="side-clock-meta">
-                      <strong>
-                        <time dateTime={new Date(visualSimNowMs).toISOString()}>{clockTimes.format(new Date(visualSimNowMs))}</time>
-                      </strong>
-                      <small>
-                        {slowingForRule
-                          ? `Slowing near ${slowingForRule.run_time} auto-buy`
-                          : nextRule
-                            ? `Next auto-buy: ${nextRule.run_time} (${dates.format(new Date(nextRule.next_run_at))})`
-                            : "Helsinki · Click to control clock"}
-                      </small>
-                    </div>
-                    <span className={`side-clock-badge ${isFastForwarding ? "active" : ""}`}>
-                      {isFastForwarding ? (slowingForRule ? "Slowing" : "Fast") : scheduleState.offset_seconds > 0 ? formatOffsetLabel(scheduleState.offset_seconds) : "Live"}
-                    </span>
-                    <ChevronDown size={15} className={`side-clock-chevron ${clockOpen ? "is-open" : ""}`} />
-                  </button>
+                  <div className="side-clock-row">
+                    <button
+                      type="button"
+                      className="side-clock-trigger"
+                      aria-expanded={clockOpen}
+                      onClick={() => setClockOpen((v) => !v)}
+                    >
+                      <span className="side-clock-icon"><Clock size={16} /></span>
+                      <div className="side-clock-meta">
+                        <strong>
+                          <time dateTime={new Date(visualSimNowMs).toISOString()}>{clockTimes.format(new Date(visualSimNowMs))}</time>
+                        </strong>
+                        <small>
+                          {slowingForRule
+                            ? `Slowing near ${slowingForRule.run_time} auto-buy`
+                            : nextRule
+                              ? `Next auto-buy: ${nextRule.run_time} (${dates.format(new Date(nextRule.next_run_at))})`
+                              : "Helsinki · Click to control clock"}
+                        </small>
+                      </div>
+                      <span className={`side-clock-badge ${isFastForwarding ? "active" : ""}`}>
+                        {isFastForwarding ? (slowingForRule ? "Slowing" : "Fast") : scheduleState.offset_seconds > 0 ? formatOffsetLabel(scheduleState.offset_seconds) : "Live"}
+                      </span>
+                      <ChevronDown size={15} className={`side-clock-chevron ${clockOpen ? "is-open" : ""}`} />
+                    </button>
+                    <button
+                      type="button"
+                      className={`side-clock-reset-btn ${scheduleState.offset_seconds > 0 || isFastForwarding ? "is-active" : ""}`}
+                      aria-label="Reset time to right now"
+                      title="Reset time to right now"
+                      disabled={Boolean(activeAction || sending || (scheduleState.offset_seconds <= 0 && !isFastForwarding && visualSimNowMs - Date.now() < 1500))}
+                      onClick={() => { void advanceClock({ reset: true }); }}
+                    >
+                      <RotateCcw size={14} />
+                    </button>
+                  </div>
 
                   {clockOpen && (
                     <div className="side-clock-drawer">
