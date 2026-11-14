@@ -92,7 +92,82 @@ def parse_images(payload: object) -> list[ImageReference]:
     return images
 
 
+_KESKO_CDN_TEMPLATE = "https://public.keskofiles.com/f/k-ruoka/product/{gtin}?h=400"
+_THUMBNAIL_TTL_SECONDS = 3600
+
+
+def _bing_thumbnail_url(query: str) -> str:
+    from urllib.parse import quote_plus
+
+    q = quote_plus(" ".join(query.split())[:120])
+    return f"https://th.bing.com/th?q={q}&w=240&h=240&c=7&rs=1&p=0&dpr=2&pid=1.7&mkt=fi-FI"
+
+
 class ImageSearch:
+    async def resolve_product_thumbnail(
+        self,
+        product_id: str,
+        query: str,
+        gtins: list[str] | None = None,
+    ) -> ImageReferences:
+        """Resolve a product photo via GTIN CDN first (~0.25s) with fast Bing thumbnail fallback (~0.5s)."""
+        thumb_cache: dict[str, tuple[float, ImageReferences]] = self.__dict__.setdefault("_thumb_cache_inst", {})
+        cache_key = f"{product_id}:{','.join(gtins or [])}"
+        cached = thumb_cache.get(cache_key)
+        now = time.monotonic()
+        if cached and now - cached[0] < _THUMBNAIL_TTL_SECONDS:
+            return cached[1]
+
+        valio_source = f"https://www.valioaimo.fi/tuotteet/{product_id}"
+        clean_gtins = [g.strip() for g in (gtins or []) if g and g.strip().isdigit()]
+        matched_url: str | None = None
+        source_label = "K-Ruoka / GS1 GTIN CDN"
+
+        if clean_gtins:
+            async def probe_gtin(client: httpx.AsyncClient, gtin: str) -> str | None:
+                candidate = _KESKO_CDN_TEMPLATE.format(gtin=gtin)
+                if not public_https_url(candidate):
+                    return None
+                try:
+                    resp = await client.head(candidate)
+                    if resp.status_code == 200 and resp.headers.get("content-type", "").startswith("image/"):
+                        return candidate
+                except Exception:
+                    return None
+                return None
+
+            async with httpx.AsyncClient(timeout=2.0, follow_redirects=True) as client:
+                results = await asyncio.gather(*(probe_gtin(client, g) for g in clean_gtins[:4]))
+                for hit in results:
+                    if hit:
+                        matched_url = hit
+                        break
+
+        if not matched_url:
+            fallback = _bing_thumbnail_url(query or product_id)
+            if public_https_url(fallback):
+                matched_url = fallback
+                source_label = "Bing Product Thumbnail"
+
+        images = (
+            [
+                ImageReference(
+                    title=query or f"SKU {product_id}",
+                    image_url=matched_url,
+                    source_url=valio_source if public_https_url(valio_source) else matched_url,
+                    source_domain="valioaimo.fi",
+                )
+            ]
+            if matched_url
+            else []
+        )
+        result = ImageReferences(
+            status="ready" if images else "empty",
+            images=images,
+            provider=source_label,
+        )
+        thumb_cache[cache_key] = (now, result)
+        return result
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None):
         self.transport = transport
         self.cache: OrderedDict[str, tuple[float, ImageReferences]] = OrderedDict()

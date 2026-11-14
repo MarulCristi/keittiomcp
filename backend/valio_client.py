@@ -457,6 +457,7 @@ class Product(BaseModel):
     comparison_price_cents: int | None = None
     comparison_unit: str | None = None
     purity_tier: int = 1
+    gtins: list[str] = Field(default_factory=list)
     substitute_tier: SubstituteTier | None = None
     substitute_reason: str | None = None
 
@@ -835,6 +836,17 @@ def _parse_synkka_product(
         if isinstance(sub, dict) and sub.get("substituteProduct"):
             explicit_subs.append(str(sub["substituteProduct"]).strip())
 
+    gtins: list[str] = []
+    for candidate in (
+        synkka.get("gtin"),
+        *[u.get("gtin") for u in (raw.get("units") or []) if isinstance(u, dict)],
+        raw.get("salesUnitGtin"),
+        raw.get("gtin"),
+    ):
+        g = str(candidate or "").strip()
+        if g and g.isdigit() and g not in gtins:
+            gtins.append(g)
+
     product = Product(
         product_id=pid,
         name=name_en,
@@ -850,6 +862,7 @@ def _parse_synkka_product(
         carbon_footprint_kg=carbon_map.get(pid),
         net_volume_liters_or_kg=vol,
         purity_tier=purity_tier,
+        gtins=gtins,
     )
     return product, explicit_subs
 

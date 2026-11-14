@@ -120,7 +120,17 @@ def agent_execute(request: AgentExecutionRequest) -> AgentExecutionResult:
 
 
 @app.get("/api/image_references")
-async def image_references(query: Annotated[str, Query(min_length=2, max_length=200)]) -> ImageReferences:
+async def image_references(
+    query: Annotated[str, Query(min_length=2, max_length=200)],
+    product_id: Annotated[str | None, Query(max_length=64)] = None,
+) -> ImageReferences:
+    if product_id:
+        pid = product_id.strip()
+        lookup_fn = getattr(client.supplier, "product_by_id", None)
+        product = lookup_fn(pid) if callable(lookup_fn) else None
+        gtins = product.gtins if product else []
+        search_label = (product.name_fi or product.name) if product else query
+        return await image_search.resolve_product_thumbnail(pid, search_label, gtins)
     return await image_search.lookup(query)
 
 

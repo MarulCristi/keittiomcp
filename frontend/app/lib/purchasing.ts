@@ -20,6 +20,8 @@ export type Product = {
   co2_range_label?: string | null;
   comparison_price_cents?: number | null;
   comparison_unit?: string | null;
+  purity_tier?: number;
+  gtins?: string[];
   substitute_tier?: string | null;
   substitute_reason?: string | null;
 };

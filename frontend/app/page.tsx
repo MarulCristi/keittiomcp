@@ -100,7 +100,6 @@ export default function Dashboard() {
   const [sending, setSending] = useState(false);
   const [thinkingStage, setThinkingStage] = useState(0);
   const [selection, setSelection] = useState<{ product: Product; sample: boolean; quantity?: number; date?: string; substitutedFor?: string } | null>(null);
-  const [activeFlow, setActiveFlow] = useState<{ execution?: AgentExecutionResult | null; order?: Order | null } | null>(null);
   const [showSamples, setShowSamples] = useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
   const chatInput = useRef<HTMLInputElement>(null);
@@ -216,38 +215,11 @@ export default function Dashboard() {
       });
       if (result.order) updateOrder(result.order);
       else void refreshSideData();
-      setActiveFlow({ execution: result, order: result.order });
-      const firstItem = result.order?.items?.[0];
-      const topOpt = result.plans?.[0]?.options?.[0]?.product;
-      const bullets: { label: string; value: string; code?: string }[] = [];
-      if (firstItem) {
-        bullets.push({
-          label: firstItem.is_substitution ? "Auto-Substituted Item" : "Selected #1 SKU",
-          value: `${firstItem.name} (${firstItem.quantity.toLocaleString("en-GB")} × ${firstItem.unit})`,
-          code: `SKU ${firstItem.product_id}`,
-        });
-      }
-      if (topOpt) {
-        const rel = topOpt.delivery_reliability != null ? `${(topOpt.delivery_reliability * 100).toFixed(0)}% on-time` : "Verified";
-        const co2 = topOpt.carbon_footprint_kg != null ? `${topOpt.carbon_footprint_kg.toFixed(2)} kg CO2e/kg` : "Category median";
-        bullets.push({
-          label: `Ranking (${(result.priority_mode ?? inferredPriority).replace("_", " ")})`,
-          value: `${rel} · ${co2}`,
-        });
-      }
-      if (result.order) {
-        bullets.push({
-          label: "Order & Guardrails",
-          value: `${money(result.order.total_cents)} · ${statusLabels[result.order.status]}${result.order.reasons.length ? ` (${result.order.reasons.join(", ")})` : " (Within €250 limit)"}`,
-          code: result.order.id,
-        });
-      }
       return {
         headline: result.order
           ? `Order ${result.order.id} — ${statusLabels[result.order.status]}`
           : "Procurement Plan Prepared",
         text: result.summary,
-        bullets,
         execution: result,
         thinking: result.decision_trace,
       };
@@ -391,11 +363,12 @@ export default function Dashboard() {
         <div className="activity-details">
           <p>{describeOrder(order)}</p>
           {order.reasons.length > 0 && <ul>{order.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
-          {order.decision_trace && order.decision_trace.length > 0 && <div style={{ marginTop: 10 }}>
-            <button type="button" className="bubble-flow-btn" onClick={() => { setActiveFlow({ order }); setView("overview"); }}>
-              <ArrowDownUp size={13} /> Inspect selection flow diagram
-            </button>
-          </div>}
+          {order.decision_trace && order.decision_trace.length > 0 && (
+            <div className="order-timeline">
+              <h3>Agent decision steps</h3>
+              <ol>{order.decision_trace.map((step, sIdx) => <li key={sIdx}><span>{step}</span></li>)}</ol>
+            </div>
+          )}
           {(preview || Boolean(workspace)) && events.some((event) => event.order_id === order.id) && <div className="order-timeline">
             <h3>Order history</h3>
             <ol>{events.filter((event) => event.order_id === order.id).map((event) => <li key={event.id}>
@@ -471,7 +444,6 @@ export default function Dashboard() {
     setSettingsSaved(false);
     setMessages([]);
     setSelection(null);
-    setActiveFlow(null);
     setShowSamples(false);
     setInput("");
     setPreview(nextPreview);
@@ -575,32 +547,45 @@ export default function Dashboard() {
                   {message.role === "agent" ? <div className="message-icon"><Sparkles size={16} /></div> : null}
                   <div className="message-body">
                     <span className="message-author">{message.role === "user" ? "You" : "Purchasing assistant"}</span>
-                    <div className="bubble markdown-bubble">
-                      {message.headline && <strong style={{ display: "block", marginBottom: 4 }}>{message.headline}</strong>}
-                      {message.bullets && message.bullets.length > 0 ? (
-                        <ul>
-                          {message.bullets.map((b, bIdx) => (
-                            <li key={bIdx}>
-                              <strong>{b.label}:</strong> {b.code && <><code>{b.code}</code> </>}{b.value}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p style={{ margin: 0, color: "var(--ink)" }}>{message.text}</p>
-                      )}
-                      {(message.execution || (message.thinking && message.thinking.length > 0)) && (
-                        <div>
-                          <button
-                            type="button"
-                            className="bubble-flow-btn"
-                            onClick={() => setActiveFlow({ execution: message.execution ?? null, order: message.execution?.order ?? null })}
-                          >
-                            <ArrowDownUp size={13} /> Inspect selection flow diagram →
-                          </button>
+                    {message.execution ? (
+                      <DecisionFlowDiagram
+                        execution={message.execution}
+                        order={message.execution.order}
+                        guardrails={workspace?.guardrails ?? null}
+                        thinkingFallback={message.thinking}
+                        onOpenApprovals={() => setView("approvals")}
+                      />
+                    ) : (
+                      <>
+                        <div className="bubble markdown-bubble">
+                          {message.headline && <strong style={{ display: "block", marginBottom: 4 }}>{message.headline}</strong>}
+                          {message.bullets && message.bullets.length > 0 ? (
+                            <ul>
+                              {message.bullets.map((b, bIdx) => (
+                                <li key={bIdx}>
+                                  <strong>{b.label}:</strong> {b.code && <><code>{b.code}</code> </>}{b.value}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p style={{ margin: 0, color: "var(--ink)" }}>{message.text}</p>
+                          )}
                         </div>
-                      )}
-                    </div>
-                    {message.role === "agent" && imageReferenceQuery(message) && <WebImageReferences query={imageReferenceQuery(message)} />}
+                        {message.role === "agent" && message.thinking && message.thinking.length > 0 && (
+                          <DecisionFlowDiagram
+                            guardrails={workspace?.guardrails ?? null}
+                            thinkingFallback={message.thinking}
+                            onOpenApprovals={() => setView("approvals")}
+                          />
+                        )}
+                      </>
+                    )}
+                    {message.role === "agent" && !message.execution && imageReferenceQuery(message) && (
+                      <WebImageReferences
+                        query={imageReferenceQuery(message)}
+                        productId={message.products?.[0]?.product_id}
+                      />
+                    )}
                     {message.products && productCards(message.products, Boolean(message.sample), message.substitutedFor, message.requestedDate, message.requestedQuantity)}
                   </div>
                 </div>
@@ -619,7 +604,7 @@ export default function Dashboard() {
                     {thinkingStage === 3 && "Step 3/4 · Calculating pack math & live Valio stock…"}
                     {thinkingStage >= 4 && "Step 4/4 · Verifying €250 guardrail & HMAC quote lock…"}
                   </strong>
-                  <small>Updating the selection flow diagram on the right…</small>
+                  <small>Preparing top 3 product comparisons, photos &amp; approval check…</small>
                 </div>
               ) : null}
               <div ref={chatEnd} />
@@ -649,15 +634,6 @@ export default function Dashboard() {
           </section>}
 
           <aside className="right-panel" aria-label="Purchasing controls">
-            {view === "overview" && activeFlow && (
-              <DecisionFlowDiagram
-                execution={activeFlow.execution}
-                order={activeFlow.order}
-                guardrails={workspace?.guardrails ?? null}
-                onClose={() => setActiveFlow(null)}
-                onOpenApprovals={() => setView("approvals")}
-              />
-            )}
             <div ref={reviewAnchor} tabIndex={-1} className="review-anchor" hidden={!selection && view === "overview"}>
               {selection ? <OrderReview key={`${selection.sample}:${selection.product.product_id}:${selection.quantity}:${selection.date}:${selection.substitutedFor}`} product={selection.product} sample={selection.sample}
                 request={request} preview={preview}
