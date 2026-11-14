@@ -6,6 +6,7 @@ import {
   ShoppingBasket, Sparkles, Wheat,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import OrderReview from "./components/order-review";
 import RequestPlanner from "./components/request-planner";
 import AgentManagement from "./components/agent-management";
@@ -335,12 +336,15 @@ export default function Dashboard() {
     <div className="min-h-screen">
       <header className="topbar">
         <div className="topbar-inner">
-          <div className="flex items-center gap-3">
-            <div className="brand-mark" aria-hidden="true"><ShieldCheck size={23} strokeWidth={1.8} /></div>
-            <div className="brand-name workspace-name">keittioMCP</div>
-            <span className="brand-divider" aria-hidden="true" />
-            <span className="brand-context">Purchasing control centre</span>
-          </div>
+          <button className="brand-home" type="button" aria-label="KeittiöMCP overview" onClick={() => setView("overview")}>
+            <Image src="/branding/keittio-wordmark.png" alt="Keittiö" width={1120} height={500} className="brand-logo" priority />
+            <span className="brand-mcp">MCP</span>
+          </button>
+          <nav className="control-nav" aria-label="KeittiöMCP workspace">
+            {navigation.map(({ id, label }) => <button type="button" key={id} aria-current={view === id ? "page" : undefined} onClick={() => setView(id)}>
+              {label}{id === "approvals" && pending.length > 0 && <span className="count">{pending.length}</span>}
+            </button>)}
+          </nav>
           <div className="mode-controls">
             <span className={`demo-label ${!workspace || workspaceError ? "disconnected" : ""}`} role="status"><span /> {preview ? "Browser preview" : workspaceError ? workspace ? "Connection lost" : "Service disconnected" : workspace ? liveSupplier ? "Junction mock connection" : "Demo workspace" : "Connecting…"}</span>
             <button className="secondary-button" type="button" disabled={Boolean(activeAction) || sending} onClick={() => switchMode(!preview)}>{preview ? "Use service connection" : "Start browser preview"}</button>
@@ -349,17 +353,9 @@ export default function Dashboard() {
       </header>
 
       <main className="shell">
-        {preview && <div className="preview-banner" role="status">
-          <div><strong>Browser preview · simulated data</strong><p>Explore agents, policies and purchasing decisions. Changes stay in this browser session and reset when you reload.</p></div>
-          <button type="button" className="secondary-button" disabled={Boolean(activeAction) || sending} onClick={() => { previewClient.current = createBrowserPreview(); setMessages([]); setSelection(null); setDecisionNotice(""); setSettingsSaved(false); setPreviewVersion((value) => value + 1); }}>Reset preview</button>
-        </div>}
-        <nav className="control-nav" aria-label="keittioMCP workspace">
-          {navigation.map(({ id, label, Icon }) => <button type="button" key={id} aria-current={view === id ? "page" : undefined} onClick={() => setView(id)}>
-            <Icon size={17} aria-hidden="true" />{label}{id === "approvals" && pending.length > 0 && <span className="count">{pending.length}</span>}
-          </button>)}
-        </nav>
         <div className="overview">
           <div>
+            <p className="page-eyebrow">Purchasing control centre</p>
             <h1>{headings[view][0]}</h1>
             <p>{headings[view][1]}</p>
           </div>
@@ -368,6 +364,11 @@ export default function Dashboard() {
           </button>
         </div>
 
+        {preview && <div className="preview-banner" role="status">
+          <div><strong>Browser preview · simulated data</strong><p>Changes stay in this browser session and reset when you reload.</p></div>
+          <button type="button" className="text-button" disabled={Boolean(activeAction) || sending} onClick={() => { previewClient.current = createBrowserPreview(); setMessages([]); setSelection(null); setDecisionNotice(""); setSettingsSaved(false); setPreviewVersion((value) => value + 1); }}>Reset preview</button>
+        </div>}
+
         {workspaceError && <div className="connection-notice" role="status">
           <div><strong>{workspace ? "Showing the last loaded workspace" : "The purchasing service is disconnected"}</strong><p>Use Refresh workspace to retry the connection.</p></div>
           {!workspace && view !== "demo" && <button type="button" className="secondary-button" onClick={() => { setShowSamples(true); setView("demo"); }}>Explore sample products</button>}
@@ -375,13 +376,19 @@ export default function Dashboard() {
         {actionError && <p className="error workspace-error" role="alert">{actionError}</p>}
         {decisionNotice && view !== "approvals" && <p className="decision-feedback" role="status">{decisionNotice}</p>}
 
-        {view === "overview" && <div className="control-content">
+        {view === "overview" && <div className="control-content overview-content">
           <dl className="metric-grid">
-            <div className="panel metric-card"><Bot size={20} /><dt>Connected agents</dt><dd>{preview ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : "Agent data unavailable"}</small></div>
-            <div className="panel metric-card"><ShoppingBasket size={20} /><dt>Orders updated today</dt><dd>{workspace ? changedToday : "—"}</dd><small>Helsinki time</small></div>
-            <div className="panel metric-card"><ClipboardList size={20} /><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><button type="button" className="text-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={13} /></button></div>
-            <div className="panel metric-card"><Check size={20} /><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small></div>
+            <div className="panel metric-card"><div className="metric-icon sky"><Bot size={28} aria-hidden="true" /></div><dt>Connected agents</dt><dd>{preview ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon blue"><ShoppingBasket size={28} aria-hidden="true" /></div><dt>Orders updated today</dt><dd>{workspace ? changedToday : "—"}</dd><small>Helsinki time</small><button type="button" className="text-button" onClick={() => setView("activity")}>View activity <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon coral"><ClipboardList size={28} aria-hidden="true" /></div><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><small>{pending.length ? "A decision needs your attention" : "No pending decisions"}</small><button type="button" className="primary-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon teal"><Check size={28} aria-hidden="true" /></div><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small><button type="button" className="text-button" onClick={() => setView("policies")}>View policies <ArrowRight size={16} /></button></div>
           </dl>
+          <div className={`overview-details ${preview ? "has-scenarios" : ""}`}>
+          <section className="panel side-panel recent-orders" aria-labelledby="recent-activity">
+            <div className="control-heading"><h2 id="recent-activity">Recent order activity</h2><button type="button" className="text-button" onClick={() => setView("activity")}>View all activity <ArrowRight size={16} /></button></div>
+            {activity(audit.slice(0, 5))}
+            {preview && <p className="panel-footnote">Sample orders · changes reset on reload</p>}
+          </section>
           {preview && <section className="panel scenario-panel" aria-labelledby="scenarios-title">
             <h2 id="scenarios-title">Try a purchasing scenario</h2><p>Each request uses your current preview permissions and policies.</p>
             <div className="scenario-buttons">
@@ -390,10 +397,7 @@ export default function Dashboard() {
               <button type="button" disabled={Boolean(activeAction) || sending} onClick={() => void runScenario("blocked")}><strong>Permission check</strong><span>Inventory Agent attempts a purchase</span></button>
             </div>
           </section>}
-          <section className="panel side-panel" aria-labelledby="recent-activity">
-            <div className="control-heading"><h2 id="recent-activity">Recent order activity</h2><button type="button" className="text-button" onClick={() => setView("activity")}>View all activity <ArrowRight size={13} /></button></div>
-            {activity(audit.slice(0, 5))}
-          </section>
+          </div>
           {preview && <EventLog events={events.slice(0, 5)} />}
         </div>}
 
@@ -576,6 +580,7 @@ export default function Dashboard() {
           <section className="panel side-panel" aria-label="Recorded order activity"><h2>Order history</h2>{activity(audit)}</section>
         </div>}
       </main>
+      <footer className="site-footer"><span>KeittiöMCP</span><span>Independent Junction prototype</span></footer>
     </div>
   );
 }

@@ -1,4 +1,6 @@
-# keittioMCP frontend quick start
+# KeittiöMCP frontend quick start
+
+The interface uses the supplied Keittiö wordmark, navy/teal/blue palette and coral action colour (`#F47C62`). Shared visual styling is in `app/brand.css`; the original logo assets are in `public/branding/`. The header stays white, and all six screens use the same responsive design. Technical package names and folder paths remain ASCII.
 
 Open a new PowerShell window and run:
 
