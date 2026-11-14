@@ -3,7 +3,7 @@
 import {
   ArrowDownUp, ArrowRight, ArrowUp, Award, Bot, CalendarClock, Check, ChevronDown, CircleHelp, ClipboardList,
   Clock, Egg, FastForward, Fish, History, LayoutDashboard, Leaf, Maximize2, Milk, Minimize2, Nut, Pause, Play,
-  Plus, RefreshCw, RotateCcw, Search, ShieldCheck, ShoppingBasket, Sparkles, SlidersHorizontal,
+  Plus, RefreshCw, Search, ShieldCheck, ShoppingBasket, Sparkles, SlidersHorizontal, Square,
   Tag, Trash2, Wheat,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
@@ -42,41 +42,20 @@ const priorityOptions: { id: PriorityMode; label: string; shortLabel: string; hi
 const PREFS_STORAGE_KEY = "keittio:preferences:v1";
 type StoredKitchenPrefs = { onboarded: boolean; priority_modes: PriorityMode[]; review_allergens: Allergen[] };
 
-const CLOCK_SPEEDS: { value: number; label: string }[] = [
-  { value: 0, label: "Pause" },
-  { value: 1, label: "1× Live" },
-  { value: 60, label: "1m/s" },
-  { value: 900, label: "15m/s" },
-  { value: 3600, label: "1h/s" },
-  { value: 21600, label: "6h/s" },
-];
-
-function computeEffectiveClockStepSeconds(
-  baseSpeed: number,
+function computeSmoothFastForwardRate(
   simNowMs: number,
   rules: ScheduledOrderRule[],
-): { stepSeconds: number; slowingForRule: ScheduledOrderRule | null } {
-  if (baseSpeed <= 1) return { stepSeconds: baseSpeed, slowingForRule: null };
+): { rate: number; slowingForRule: ScheduledOrderRule | null } {
   const enabled = rules
     .filter((r) => r.enabled)
     .sort((a, b) => new Date(a.next_run_at).getTime() - new Date(b.next_run_at).getTime());
   const nextRule = enabled[0];
-  if (!nextRule) return { stepSeconds: baseSpeed, slowingForRule: null };
-  const secsUntil = Math.max(0, Math.ceil((new Date(nextRule.next_run_at).getTime() - simNowMs) / 1000));
-  if (secsUntil <= 120) {
-    const capped = Math.min(baseSpeed, 15);
-    const stepSeconds = secsUntil > 0 && secsUntil < capped ? secsUntil + 1 : capped;
-    return { stepSeconds, slowingForRule: nextRule };
-  }
-  if (secsUntil <= 900) {
-    const capped = Math.min(baseSpeed, 60);
-    return { stepSeconds: capped, slowingForRule: capped < baseSpeed ? nextRule : null };
-  }
-  if (secsUntil <= 3600) {
-    const capped = Math.min(baseSpeed, 300);
-    return { stepSeconds: capped, slowingForRule: capped < baseSpeed ? nextRule : null };
-  }
-  return { stepSeconds: baseSpeed, slowingForRule: null };
+  if (!nextRule) return { rate: 7200, slowingForRule: null };
+  const secsUntil = Math.max(0, (new Date(nextRule.next_run_at).getTime() - simNowMs) / 1000);
+  if (secsUntil <= 90) return { rate: 15, slowingForRule: nextRule };
+  if (secsUntil <= 600) return { rate: 120, slowingForRule: nextRule };
+  if (secsUntil <= 3600) return { rate: 900, slowingForRule: nextRule };
+  return { rate: 7200, slowingForRule: null };
 }
 
 function parseSetupPreferencesFromChat(text: string): { allergens?: Allergen[]; priorities?: PriorityMode[] } | null {
@@ -208,9 +187,9 @@ export default function Dashboard() {
   const [selection, setSelection] = useState<{ product: Product; sample: boolean; quantity?: number; date?: string; substitutedFor?: string } | null>(null);
   const [showSamples, setShowSamples] = useState(false);
   const [scheduleState, setScheduleState] = useState<ScheduleWorkspaceState | null>(null);
-  const [clockSpeed, setClockSpeed] = useState<number>(1);
+  const [isFastForwarding, setIsFastForwarding] = useState(false);
   const [clockOpen, setClockOpen] = useState(false);
-  const [clockDisplayNowMs, setClockDisplayNowMs] = useState<number>(() => Date.now());
+  const [visualSimNowMs, setVisualSimNowMs] = useState<number>(() => Date.now());
   const [showScheduleForm, setShowScheduleForm] = useState(false);
   const [schedPrompt, setSchedPrompt] = useState("20 L lactose-free milk");
   const [schedCadence, setSchedCadence] = useState<ScheduledOrderCadence>("daily");
@@ -219,6 +198,8 @@ export default function Dashboard() {
   const [needsInitialSetup, setNeedsInitialSetup] = useState(false);
   const [isChatFullscreen, setIsChatFullscreen] = useState(false);
   const clockTickBusy = useRef(false);
+  const visualExtraMsRef = useRef(0);
+  const scheduleStateRef = useRef<ScheduleWorkspaceState | null>(null);
   const prefsBootstrapped = useRef(false);
   const chatEnd = useRef<HTMLDivElement>(null);
   const chatInput = useRef<HTMLInputElement>(null);
@@ -393,8 +374,13 @@ export default function Dashboard() {
     setActionError("");
     try {
       const res = await request<ClockAdvanceResponse>("clock/advance", "POST", options);
-      setScheduleState({ simulated_now: res.simulated_now, real_now: res.real_now, offset_seconds: res.offset_seconds, rules: res.rules });
-      if (options.reset) setClockSpeed(1);
+      const nextState: ScheduleWorkspaceState = { simulated_now: res.simulated_now, real_now: res.real_now, offset_seconds: res.offset_seconds, rules: res.rules };
+      scheduleStateRef.current = nextState;
+      setScheduleState(nextState);
+      if (options.reset) {
+        setIsFastForwarding(false);
+        visualExtraMsRef.current = 0;
+      }
       if (res.executed_runs.length > 0) {
         const newMessages: Message[] = res.executed_runs.map((run) => ({
           role: "agent",
@@ -407,7 +393,7 @@ export default function Dashboard() {
         await loadWorkspace(undefined, true);
       }
     } catch (error) {
-      setClockSpeed(1);
+      setIsFastForwarding(false);
       setActionError(errorMessage(error));
     } finally {
       clockTickBusy.current = false;
@@ -459,22 +445,64 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (clockSpeed === 0) return;
+    scheduleStateRef.current = scheduleState;
+    if (!isFastForwarding && scheduleState) {
+      setVisualSimNowMs(Date.now() + scheduleState.offset_seconds * 1000);
+    }
+  }, [scheduleState, isFastForwarding]);
+
+  useEffect(() => {
+    if (isFastForwarding) {
+      let rafId = 0;
+      let lastFrame = performance.now();
+      let lastPaint = lastFrame;
+      let lastSync = lastFrame;
+
+      const stepFrame = (now: number) => {
+        const dtSec = Math.min(0.1, Math.max(0, (now - lastFrame) / 1000));
+        lastFrame = now;
+        const st = scheduleStateRef.current;
+        const baseSimMs = Date.now() + (st?.offset_seconds ?? 0) * 1000;
+        const currentSimMs = baseSimMs + visualExtraMsRef.current;
+        const { rate } = computeSmoothFastForwardRate(currentSimMs, st?.rules ?? []);
+
+        if (!clockTickBusy.current && !sending && !activeAction) {
+          visualExtraMsRef.current += dtSec * rate * 1000;
+        }
+        const nextVisualMs = baseSimMs + visualExtraMsRef.current;
+
+        if (now - lastPaint >= 33) {
+          lastPaint = now;
+          setVisualSimNowMs(nextVisualMs);
+        }
+
+        const crossedRule = st?.rules.some((r) => r.enabled && new Date(r.next_run_at).getTime() <= nextVisualMs);
+        const pendingSecs = Math.floor(visualExtraMsRef.current / 1000);
+        if ((crossedRule || (pendingSecs >= 5 && now - lastSync >= 400)) && !clockTickBusy.current && !sending && !activeAction) {
+          lastSync = now;
+          const delta = Math.max(1, pendingSecs);
+          visualExtraMsRef.current = Math.max(0, visualExtraMsRef.current - delta * 1000);
+          void advanceClock({ seconds: delta });
+        }
+
+        rafId = window.requestAnimationFrame(stepFrame);
+      };
+
+      rafId = window.requestAnimationFrame(stepFrame);
+      return () => window.cancelAnimationFrame(rafId);
+    }
+
     const timer = window.setInterval(() => {
-      const realNow = Date.now();
-      setClockDisplayNowMs(realNow);
-      if (!scheduleState || clockTickBusy.current || sending || activeAction) return;
-      const simNowMs = realNow + scheduleState.offset_seconds * 1000;
-      if (clockSpeed > 1) {
-        const { stepSeconds } = computeEffectiveClockStepSeconds(clockSpeed, simNowMs, scheduleState.rules);
-        if (stepSeconds > 0) void advanceClock({ seconds: stepSeconds });
-      } else {
-        const hasDue = scheduleState.rules.some((r) => r.enabled && new Date(r.next_run_at).getTime() <= simNowMs);
+      const st = scheduleStateRef.current;
+      const simNowMs = Date.now() + (st?.offset_seconds ?? 0) * 1000;
+      setVisualSimNowMs(simNowMs);
+      if (st && !clockTickBusy.current && !sending && !activeAction) {
+        const hasDue = st.rules.some((r) => r.enabled && new Date(r.next_run_at).getTime() <= simNowMs);
         if (hasDue) void advanceClock({ seconds: 1 });
       }
     }, 1000);
     return () => window.clearInterval(timer);
-  });
+  }, [isFastForwarding, sending, activeAction]);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1132,15 +1160,15 @@ export default function Dashboard() {
             </section>}
 
             {view === "overview" && scheduleState && (() => {
-              const simNowMs = clockDisplayNowMs + scheduleState.offset_seconds * 1000;
-              const { slowingForRule } = computeEffectiveClockStepSeconds(clockSpeed, simNowMs, scheduleState.rules);
+              const { slowingForRule } = isFastForwarding
+                ? computeSmoothFastForwardRate(visualSimNowMs, scheduleState.rules)
+                : { slowingForRule: null };
               const nextRule = scheduleState.rules
                 .filter((r) => r.enabled)
                 .sort((a, b) => new Date(a.next_run_at).getTime() - new Date(b.next_run_at).getTime())[0];
-              const activeSpeedLabel = CLOCK_SPEEDS.find((s) => s.value === clockSpeed)?.label ?? `${clockSpeed}s/s`;
               return (
                 <section
-                  className={`panel side-clock-card ${scheduleState.offset_seconds > 0 ? "is-future" : ""} ${clockSpeed > 1 ? "is-fast" : ""} ${slowingForRule ? "is-slowing" : ""}`}
+                  className={`panel side-clock-card ${scheduleState.offset_seconds > 0 ? "is-future" : ""} ${isFastForwarding ? "is-fast" : ""} ${slowingForRule ? "is-slowing" : ""}`}
                   aria-label="Simulation clock controller"
                 >
                   <button
@@ -1152,52 +1180,57 @@ export default function Dashboard() {
                     <span className="side-clock-icon"><Clock size={16} /></span>
                     <div className="side-clock-meta">
                       <strong>
-                        <time dateTime={new Date(simNowMs).toISOString()}>{clockTimes.format(new Date(simNowMs))}</time>
+                        <time dateTime={new Date(visualSimNowMs).toISOString()}>{clockTimes.format(new Date(visualSimNowMs))}</time>
                       </strong>
                       <small>
                         {slowingForRule
                           ? `Slowing near ${slowingForRule.run_time} auto-buy`
                           : nextRule
-                            ? `Next: ${nextRule.run_time} (${dates.format(new Date(nextRule.next_run_at))})`
-                            : "Helsinki · Click to speed up time"}
+                            ? `Next auto-buy: ${nextRule.run_time} (${dates.format(new Date(nextRule.next_run_at))})`
+                            : "Helsinki · Click to control clock"}
                       </small>
                     </div>
-                    <span className={`side-clock-badge ${clockSpeed > 1 ? "active" : ""}`}>
-                      {clockSpeed === 0 ? "Paused" : scheduleState.offset_seconds > 0 && clockSpeed === 1 ? formatOffsetLabel(scheduleState.offset_seconds) : activeSpeedLabel}
+                    <span className={`side-clock-badge ${isFastForwarding ? "active" : ""}`}>
+                      {isFastForwarding ? (slowingForRule ? "Slowing" : "Fast") : scheduleState.offset_seconds > 0 ? formatOffsetLabel(scheduleState.offset_seconds) : "Live"}
                     </span>
                     <ChevronDown size={15} className={`side-clock-chevron ${clockOpen ? "is-open" : ""}`} />
                   </button>
 
                   {clockOpen && (
                     <div className="side-clock-drawer">
-                      <div className="side-clock-drawer-head">
-                        <span>Playback speed</span>
-                        {scheduleState.offset_seconds > 0 && (
-                          <button type="button" className="text-button" onClick={() => void advanceClock({ reset: true })}>
-                            <RotateCcw size={12} /> Reset to real time ({formatOffsetLabel(scheduleState.offset_seconds)})
-                          </button>
-                        )}
-                      </div>
-                      <div className="side-clock-speeds">
-                        {CLOCK_SPEEDS.map(({ value, label }) => (
-                          <button
-                            key={value}
-                            type="button"
-                            aria-pressed={clockSpeed === value}
-                            className={`clock-speed-btn ${clockSpeed === value ? "is-active" : ""}`}
-                            onClick={() => setClockSpeed(value)}
-                          >
-                            {value > 1 && <FastForward size={11} />}
-                            {value === 0 && <Pause size={11} />}
-                            {value === 1 && <Play size={11} />}
-                            <span>{label}</span>
-                          </button>
-                        ))}
+                      <div className="side-clock-two-actions">
+                        <button
+                          type="button"
+                          className={`clock-main-btn fast ${isFastForwarding ? "is-active" : ""}`}
+                          disabled={isFastForwarding}
+                          onClick={() => setIsFastForwarding(true)}
+                        >
+                          <FastForward size={14} />
+                          <span>Fast Forward</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`clock-main-btn stop ${!isFastForwarding ? "is-idle" : ""}`}
+                          disabled={!isFastForwarding}
+                          onClick={() => {
+                            setIsFastForwarding(false);
+                            const pending = Math.floor(visualExtraMsRef.current / 1000);
+                            if (pending > 0) {
+                              visualExtraMsRef.current = 0;
+                              void advanceClock({ seconds: pending });
+                            }
+                          }}
+                        >
+                          <Square size={12} fill="currentColor" />
+                          <span>Stop</span>
+                        </button>
                       </div>
                       <p className="side-clock-note">
                         {slowingForRule
-                          ? `Auto-slowing near ${slowingForRule.run_time} (“${slowingForRule.prompt}”) so you can watch the buy trigger live.`
-                          : "Speeds up time forward and automatically slows down as an active schedule approaches."}
+                          ? `Slowing smoothly as time approaches ${slowingForRule.run_time} (“${slowingForRule.prompt}”).`
+                          : isFastForwarding
+                            ? "Advancing quickly — slows down automatically when approaching scheduled buys."
+                            : "Press Fast Forward to smoothly advance simulated time."}
                       </p>
                     </div>
                   )}

@@ -3,8 +3,8 @@
 import { useState } from "react";
 import {
   AlertTriangle, ArrowDownUp, Award, Ban, CheckCircle2, ChevronDown,
-  Filter, Leaf, Lock, MapPin, PackageCheck, ShieldAlert, ShieldCheck,
-  Sparkles, Trophy, Truck,
+  Filter, Leaf, MapPin, ShieldAlert, ShieldCheck,
+  Sparkles, Truck,
 } from "lucide-react";
 import {
   money, statusLabels,
@@ -19,6 +19,90 @@ const PRIORITY_LABELS: Record<PriorityMode, string> = {
   authentic_finnish: "Authentic Finnish Origin (Blue Swan / Key Flag)",
   highest_reliability: "Highest Delivery Reliability (100% On-Time)",
 };
+
+const GS1_CATEGORY_LABELS: Record<string, string> = {
+  "10400": "Milk & Milk Drinks",
+  "10401": "Cream & Cooking Dairy",
+  "10402": "Plant-Based Cream & Drinks",
+  "10405": "Milk Powder",
+  "10406": "Flavoured Cream & Plant Drinks",
+  "10411": "Yoghurt & Fermented Dairy",
+  "10412": "Quark & Viili",
+  "10413": "Oat & Plant Drinks",
+  "10418": "Smetana & Sour Cream",
+  "10419": "Crème Fraîche & Sour Cream",
+  "10430": "Fresh Dairy Desserts",
+  "10500": "Butter & Dairy Spreads",
+  "10501": "Salted Butter & Spreads",
+  "10502": "Cooking Fats & Margarine",
+  "10515": "Margarine & Plant Spreads",
+  "10517": "Cooking & Olive Oils",
+  "10530": "Rapeseed & Vegetable Oils",
+  "10590": "Shell Eggs",
+  "10592": "Processed & Liquid Eggs",
+  "10600": "Hard & Semi-Hard Cheese",
+  "10630": "Fresh & Feta Cheese",
+  "10900": "Fresh Bread & Rolls",
+  "17300": "Prepared Soups & Casseroles",
+  "17301": "Prepared Salads",
+  "17303": "Sandwiches & Wraps",
+  "17401": "Fresh Greenhouse Vegetables",
+  "17406": "Whole Fresh Vegetables",
+  "17411": "Fresh Berries & Stone Fruit",
+  "17423": "Fresh Potatoes & Root Veg",
+  "17443": "Pre-Cut Fresh Vegetables",
+  "18701": "Fresh Fish & Fillets",
+  "18703": "Fresh Crustaceans & Shellfish",
+  "18710": "Fresh Pork Cuts",
+  "18720": "Fresh Beef Cuts",
+  "18750": "Fresh Chicken & Poultry",
+  "18751": "Poultry Cuts & Fillets",
+  "21300": "Pasta, Rice & Dry Grains",
+  "21904": "Sauces & Condiments",
+  "21980": "Dry Dessert & Milk Powders",
+  "41702": "Frozen Beef",
+  "41710": "Frozen Poultry",
+  "41720": "Frozen Fish & Seafood",
+  "41731": "Frozen Vegetables",
+  "41740": "Frozen Berries & Fruit",
+  "41800": "Ice Cream & Frozen Desserts",
+  "52290": "Chocolate & Confectionery",
+  "63210": "Kitchen Paper & Tissue",
+  "AIMO-DAIRY": "Milk & Dairy Drinks",
+  "AIMO-PRODUCE": "Fresh Produce & Vegetables",
+};
+
+function formatCategoryLabel(catCode?: string | null, query?: string): string {
+  const code = (catCode ?? "").trim();
+  if (code && GS1_CATEGORY_LABELS[code]) {
+    return `${GS1_CATEGORY_LABELS[code]} (GS1 ${code})`;
+  }
+  if (code.startsWith("104")) return `Dairy & Plant Drinks (GS1 ${code})`;
+  if (code.startsWith("105")) return `Fats, Oils & Eggs (GS1 ${code})`;
+  if (code.startsWith("106")) return `Cheese & Curds (GS1 ${code})`;
+  if (code.startsWith("109")) return `Bakery & Bread (GS1 ${code})`;
+  if (code.startsWith("174") || code.startsWith("4173") || code.startsWith("4174")) return `Vegetables, Fruit & Potatoes (GS1 ${code})`;
+  if (code.startsWith("1870") || code.startsWith("4172")) return `Fish & Seafood (GS1 ${code})`;
+  if (code.startsWith("1875") || code.startsWith("4171")) return `Poultry (GS1 ${code})`;
+  if (code.startsWith("187") || code.startsWith("4170")) return `Meat & Meat Cuts (GS1 ${code})`;
+  if (code.startsWith("213")) return `Pasta, Rice & Dry Goods (GS1 ${code})`;
+  if (code.startsWith("219")) return `Sauces, Stocks & Dry Mixes (GS1 ${code})`;
+  if (code.startsWith("522")) return `Chocolate & Confectionery (GS1 ${code})`;
+  if (code.startsWith("632")) return `Kitchen Paper & Disposables (GS1 ${code})`;
+  if (code && code !== "N/A") return `GS1 Category ${code}`;
+  return query ? `Catalog query '${query}'` : "Catalog Search";
+}
+
+function formatTotalQuantityLabel(packs: number, product: Product, unitHint?: string): string {
+  const perPack = product.net_volume_liters_or_kg;
+  if (perPack != null && perPack > 0) {
+    const total = Number((packs * perPack).toFixed(2));
+    const unit = product.comparison_unit
+      || (/\b(?:ml|dl|l)\b/i.test(product.unit) || unitHint === "L" ? "L" : "kg");
+    return `${total.toLocaleString("en-GB")} ${unit}`;
+  }
+  return "";
+}
 
 function renderCodeTokens(text: string) {
   const parts = text.split(/(`[^`]+`|\b(?:SKU\s+\S+|GS1\s+Cat\s+\S+|PO-\d+|QLOCK-[A-Z0-9-]+)\b)/gi);
@@ -112,205 +196,119 @@ export default function DecisionFlowDiagram({
   const winnerProduct = bestOption?.product;
   const tv = activeOrder?.trust_verification;
 
-  const step1Summary = parsedLine ? (
-    <>
-      <code>{parsedLine.target_volume_liters_or_kg.toLocaleString("en-GB")} {parsedLine.unit_hint}</code>{" "}
-      <code>{parsedLine.query}</code>
-    </>
-  ) : (
-    renderCodeTokens(trace[0]?.replace(/^\d+\.\s*[^:]+:\s*/, "").split("·")[0]?.trim() ?? "Catalog & dietary filter")
-  );
-  const step1Badge = bestOption?.product.category
-    ? `GS1 Cat ${bestOption.product.category}`
-    : (trace[0]?.match(/GS1 Cat\s+(\S+)/i)?.[1] ? `GS1 Cat ${trace[0].match(/GS1 Cat\s+(\S+)/i)?.[1]}` : "Filtered");
+  const rawCatCode = bestOption?.product.category
+    ?? rejectedProducts[0]?.category
+    ?? trace[0]?.match(/GS1 Cat\s+(\S+)/i)?.[1]
+    ?? null;
+  const chosenCategoryText = formatCategoryLabel(rawCatCode, parsedLine?.query);
+  const excludedAllergensText = Array.from(excludedSet).join(", ") || "None";
+  const targetVolumeText = parsedLine
+    ? `${parsedLine.target_volume_liters_or_kg.toLocaleString("en-GB")} ${parsedLine.unit_hint}`
+    : (firstItem ? `${firstItem.quantity} packs` : "Specified in request");
+  const deliveryDateText = execution?.requested_date ?? tv?.requested_delivery_date ?? "2026-11-16";
 
-  const step2SkuId = winnerProduct?.product_id ?? firstItem?.product_id;
-  const step2Name = winnerProduct?.name ?? firstItem?.name;
-  const step2Summary = step2SkuId ? (
-    <>
-      <code>SKU {step2SkuId}</code> — {step2Name}
-    </>
-  ) : (
-    renderCodeTokens(trace[1]?.replace(/^\d+\.\s*[^:]+:\s*/, "") ?? "Ranked candidates")
-  );
-  const step2Badge = winnerProduct?.delivery_reliability != null
-    ? `${(winnerProduct.delivery_reliability * 100).toFixed(0)}% on-time`
-    : activeOrder?.min_reliability != null
-      ? `${(activeOrder.min_reliability * 100).toFixed(0)}% on-time`
-      : PRIORITY_LABELS[priorityMode].split(" ")[0];
-
-  const step3Summary = isRejected ? (
-    <>
-      <code>0 safe SKUs</code> — skipped pack math
-    </>
-  ) : firstItem ? (
-    <code>{firstItem.quantity.toLocaleString("en-GB")} × {firstItem.unit}</code>
-  ) : bestOption ? (
-    <code>{bestOption.recommended_packs ?? 1} × {bestOption.product.unit}</code>
-  ) : (
-    <code>Pack math verified</code>
-  );
-  const step3Badge = isRejected ? "Ignored" : isSubstituted ? "Auto-Substituted" : "Stock Verified";
-
-  const step4Summary = isRejected ? (
-    <>
-      <code>REJECTED</code> · No order placed
-    </>
-  ) : activeOrder ? (
-    <>
-      <code>{activeOrder.id}</code> · <code>{money(activeOrder.total_cents)}</code>
-    </>
-  ) : (
-    <code>Prepared plan</code>
-  );
-  const step4Badge = isRejected ? "Rejected" : activeOrder ? statusLabels[activeOrder.status] : "Quote ready";
+  const matchedCountText = trace[0]?.match(/Matched\s+(\d+)\s+safe\s+SKUs/i)?.[1];
+  const chosenTotalQty = bestOption && firstItem
+    ? formatTotalQuantityLabel(firstItem.quantity, bestOption.product, parsedLine?.unit_hint)
+    : bestOption && bestOption.recommended_packs != null
+      ? formatTotalQuantityLabel(bestOption.recommended_packs, bestOption.product, parsedLine?.unit_hint)
+      : "";
 
   return (
     <div className="decision-inline">
-      {/* 1. Minimalistic Click-to-Expand Thinking Steps */}
-      <div className="thinking-steps" role="list" aria-label="Agent thinking steps">
-        {/* Step 1 */}
-        <div className={`step-pill ${openSteps[1] ? "is-open" : ""}`} role="listitem">
-          <button
-            type="button"
-            className="step-pill-trigger"
-            onClick={() => toggle(1)}
-            aria-expanded={Boolean(openSteps[1])}
-          >
+      {/* 1. Always-Clear Category & Dietary Filter Card + Step-by-Step Decision Walkthrough */}
+      <div className="thinking-steps" role="list" aria-label="Category filter and decision walkthrough">
+        <div className="step-pill is-static" role="listitem">
+          <div className="step-pill-header-row">
             <span className="step-pill-icon sky"><Filter size={13} /></span>
-            <span className="step-pill-label">Step 1</span>
-            <span className="step-pill-title">Category &amp; Dietary Filter</span>
-            <span className="step-pill-summary">{step1Summary}</span>
-            <code className="step-pill-code">{step1Badge}</code>
-            <ChevronDown size={14} className="step-pill-chevron" />
-          </button>
-          <div className="step-dropdown" aria-hidden={!openSteps[1]}>
-            <div className="step-dropdown-inner">
-              <div className="step-console-grid">
-                <div><span>Request</span><code>{execution?.prompt ?? (parsedLine ? `${parsedLine.target_volume_liters_or_kg} ${parsedLine.unit_hint} ${parsedLine.query}` : "Kitchen query")}</code></div>
-                {parsedLine && (
-                  <div><span>Target volume</span><code>{parsedLine.target_volume_liters_or_kg.toLocaleString("en-GB")} {parsedLine.unit_hint}</code></div>
-                )}
-                <div><span>Delivery date</span><code>{execution?.requested_date ?? tv?.requested_delivery_date ?? "2026-11-16"}</code></div>
-                <div><span>Excluded allergens</span><code>{(parsedLine?.exclude_allergens ?? guardrails?.review_allergens ?? []).join(", ") || "None"}</code></div>
-                <div><span>Kitchen priority</span><strong>{priorityTitle}</strong></div>
-              </div>
-              {trace[0] && <pre className="step-console-line">{renderCodeTokens(trace[0])}</pre>}
+            <span className="step-pill-title">Category &amp; dietary filter</span>
+            <code className="step-pill-code">{chosenCategoryText}</code>
+          </div>
+          <div className="step-filter-summary-grid">
+            <div>
+              <span>Chosen category</span>
+              <strong>{chosenCategoryText}</strong>
+            </div>
+            <div>
+              <span>Target volume</span>
+              <strong>{targetVolumeText}</strong>
+            </div>
+            <div>
+              <span>Delivery date</span>
+              <strong>{deliveryDateText}</strong>
+            </div>
+            <div>
+              <span>Excluded allergens</span>
+              <strong className={excludedSet.size > 0 ? "is-allergen-active" : ""}>{excludedAllergensText}</strong>
             </div>
           </div>
         </div>
 
-        {/* Step 2 */}
-        <div className={`step-pill ${openSteps[2] ? "is-open" : ""}`} role="listitem">
+        <div className={`step-pill ${openSteps[2] ? "is-open" : ""} ${isRejected || isSubstituted || activeOrder?.status === "pending" ? "is-warning" : ""}`} role="listitem">
           <button
             type="button"
-            className="step-pill-trigger"
+            className="step-pill-trigger step-walkthrough-trigger"
             onClick={() => toggle(2)}
             aria-expanded={Boolean(openSteps[2])}
           >
-            <span className="step-pill-icon blue"><Trophy size={13} /></span>
-            <span className="step-pill-label">Step 2</span>
-            <span className="step-pill-title">Priority Ranking</span>
-            <span className="step-pill-summary">{step2Summary}</span>
-            <code className="step-pill-code">{step2Badge}</code>
-            <ChevronDown size={14} className="step-pill-chevron" />
+            <div className="step-pill-header-row">
+              <span className="step-pill-title">Step-by-step decision summary</span>
+              <span className="step-walkthrough-hint">
+                {openSteps[2] ? "Hide steps" : "See how it went"}
+                <ChevronDown size={14} className="step-pill-chevron" />
+              </span>
+            </div>
+            <ol className="step-journey-list">
+              <li>
+                <span>1. Filtered</span>
+                <span>
+                  Locked to <code>{chosenCategoryText}</code>
+                  {excludedSet.size > 0 ? <> · excluded <code>{excludedAllergensText}</code></> : null}
+                  {matchedCountText ? ` → ${matchedCountText} safe options` : isRejected ? " → 0 safe options" : ""}
+                </span>
+              </li>
+              <li>
+                <span>2. Selected</span>
+                <span>
+                  {isRejected ? (
+                    <>Rejected automatically (every match contained excluded allergens)</>
+                  ) : isSubstituted ? (
+                    <>
+                      Primary SKU <code>{firstItem?.substituted_for ?? winnerProduct?.product_id}</code> lacked stock → substituted to{" "}
+                      <code>SKU {firstItem?.product_id}</code> ({firstItem?.name})
+                    </>
+                  ) : (
+                    <>
+                      Top match for {priorityTitle.split(" (")[0]}: <code>SKU {chosenSkuId ?? "verified"}</code> — {firstItem?.name ?? winnerProduct?.name ?? "Matched SKU"}
+                    </>
+                  )}
+                </span>
+              </li>
+              {!isRejected && activeOrder && (
+                <li>
+                  <span>3. Outcome</span>
+                  <span>
+                    Ordered <code>{firstItem?.quantity ?? bestOption?.recommended_packs ?? 1}×</code>
+                    {chosenTotalQty ? ` (${chosenTotalQty})` : ""} for <code>{money(activeOrder.total_cents)}</code> →{" "}
+                    {activeOrder.status === "pending"
+                      ? `Pending review (exceeds ${money(maxApproveCents)} limit or flagged rule)`
+                      : activeOrder.status === "rejected"
+                        ? "Denied"
+                        : `Auto-approved (within ${money(maxApproveCents)} limit)`}
+                  </span>
+                </li>
+              )}
+            </ol>
           </button>
           <div className="step-dropdown" aria-hidden={!openSteps[2]}>
             <div className="step-dropdown-inner">
-              <p className="step-explain-text">
-                Evaluated {options.length > 0 ? `top ${options.length} pure & category-matched Valio Aimo SKUs` : "catalog matches"} under{" "}
-                <strong>{priorityTitle}</strong> weighting (ingredient purity tier, delivery reliability, CO₂e/kg vs category median, and comparison price/kg or L).
-              </p>
-              {trace[1] && <pre className="step-console-line">{renderCodeTokens(trace[1])}</pre>}
-            </div>
-          </div>
-        </div>
-
-        {/* Step 3 */}
-        <div className={`step-pill ${openSteps[3] ? "is-open" : ""} ${isSubstituted ? "is-warning" : ""}`} role="listitem">
-          <button
-            type="button"
-            className="step-pill-trigger"
-            onClick={() => toggle(3)}
-            aria-expanded={Boolean(openSteps[3])}
-          >
-            <span className={`step-pill-icon ${isSubstituted ? "orange" : "turquoise"}`}>
-              {isSubstituted ? <ArrowDownUp size={13} /> : <PackageCheck size={13} />}
-            </span>
-            <span className="step-pill-label">Step 3</span>
-            <span className="step-pill-title">Pack Math &amp; Live Stock</span>
-            <span className="step-pill-summary">{step3Summary}</span>
-            <code className={`step-pill-code ${isSubstituted ? "warn" : ""}`}>{step3Badge}</code>
-            <ChevronDown size={14} className="step-pill-chevron" />
-          </button>
-          <div className="step-dropdown" aria-hidden={!openSteps[3]}>
-            <div className="step-dropdown-inner">
-              {isSubstituted && (
-                <div className="step-sub-alert">
-                  <ArrowDownUp size={14} />
-                  <span>
-                    Primary SKU <code>{firstItem?.substituted_for ?? winnerProduct?.product_id}</code> had insufficient live stock and was auto-substituted to{" "}
-                    <code>SKU {firstItem?.product_id}</code> — <strong>{firstItem?.name}</strong>.
-                  </span>
+              {trace.length > 0 && (
+                <div className="step-trace-notes">
+                  {trace.map((line, tIdx) => (
+                    <p key={tIdx} className="step-trace-item">{renderCodeTokens(line)}</p>
+                  ))}
                 </div>
               )}
-              <div className="step-console-grid">
-                {parsedLine && bestOption && (
-                  <div>
-                    <span>Pack formula</span>
-                    <code>ceil({parsedLine.target_volume_liters_or_kg} ÷ {bestOption.product.net_volume_liters_or_kg ?? 1}) = {firstItem?.quantity ?? bestOption.recommended_packs} × {firstItem?.unit ?? bestOption.product.unit}</code>
-                  </div>
-                )}
-                {firstItem && (
-                  <div>
-                    <span>Locked unit price</span>
-                    <code>{firstItem.unit_price_cents != null ? `${money(firstItem.unit_price_cents)} / ${firstItem.unit}` : "Verified"}</code>
-                  </div>
-                )}
-                <div>
-                  <span>Warehouse stock</span>
-                  <code>{bestOption?.available_packs == null ? "Direct terminal allocation" : `${bestOption.available_packs} packs available`}</code>
-                </div>
-              </div>
-              {trace[2] && <pre className="step-console-line">{renderCodeTokens(trace[2])}</pre>}
-            </div>
-          </div>
-        </div>
-
-        {/* Step 4 */}
-        <div className={`step-pill ${openSteps[4] ? "is-open" : ""} ${isRejected || activeOrder?.status === "pending" ? "is-warning" : ""}`} role="listitem">
-          <button
-            type="button"
-            className="step-pill-trigger"
-            onClick={() => toggle(4)}
-            aria-expanded={Boolean(openSteps[4])}
-          >
-            <span className={`step-pill-icon ${isRejected || activeOrder?.status === "pending" ? "orange" : "navy"}`}>
-              {isRejected ? <Ban size={13} /> : activeOrder?.status === "pending" ? <ShieldAlert size={13} /> : <Lock size={13} />}
-            </span>
-            <span className="step-pill-label">Step 4</span>
-            <span className="step-pill-title">Guardrails &amp; Quote Lock</span>
-            <span className="step-pill-summary">{step4Summary}</span>
-            <code className={`step-pill-code ${isRejected || activeOrder?.status === "pending" ? "warn" : "ok"}`}>{step4Badge}</code>
-            <ChevronDown size={14} className="step-pill-chevron" />
-          </button>
-          <div className="step-dropdown" aria-hidden={!openSteps[4]}>
-            <div className="step-dropdown-inner">
-              <div className="step-console-grid">
-                <div><span>Auto-approve limit</span><code>{money(maxApproveCents)}</code></div>
-                <div><span>Order total</span><code>{isRejected ? "€0.00 (Rejected)" : activeOrder ? money(activeOrder.total_cents) : "N/A"}</code></div>
-                <div><span>Excluded allergens</span><code>{Array.from(excludedSet).join(", ") || "None"}</code></div>
-                <div><span>Trust protocol</span><code>{tv?.protocol ?? "keittio-valio-trust-v1"}</code></div>
-                {tv?.quote_lock_id && <div><span>Quote lock ID</span><code>{tv.quote_lock_id}</code></div>}
-                {tv?.signature_hmac_sha256 && (
-                  <div><span>HMAC-SHA256</span><code>{tv.signature_hmac_sha256.slice(0, 24)}…</code></div>
-                )}
-                <div><span>Privacy audit model</span><code>{tv?.privacy_audit_model ?? execution?.orchestrator_model ?? "models/gemma-4-26b-a4b-it"}</code></div>
-              </div>
-              {tv?.privacy_audit_summary && (
-                <p className="step-explain-text" style={{ marginTop: 8 }}>{tv.privacy_audit_summary}</p>
-              )}
-              {trace[3] && <pre className="step-console-line">{renderCodeTokens(trace[3])}</pre>}
             </div>
           </div>
         </div>
@@ -484,15 +482,18 @@ export default function DecisionFlowDiagram({
                           <strong>{compPrice}</strong>
                         </div>
                       )}
-                      {opt.recommended_packs != null && (
-                        <div className="choice-metric-box">
-                          <span className="metric-lbl">Pack total</span>
-                          <strong>
-                            {opt.recommended_packs} × {p.unit.split(" ")[0]}
-                            {opt.total_price_cents != null ? ` = ${money(opt.total_price_cents)}` : ""}
-                          </strong>
-                        </div>
-                      )}
+                      {opt.recommended_packs != null && (() => {
+                        const qtyLabel = formatTotalQuantityLabel(opt.recommended_packs, p, parsedLine?.unit_hint);
+                        return (
+                          <div className="choice-metric-box">
+                            <span className="metric-lbl">Pack total</span>
+                            <strong>
+                              {opt.recommended_packs}×{qtyLabel ? ` (${qtyLabel})` : ""}
+                              {opt.total_price_cents != null ? ` = ${money(opt.total_price_cents)}` : ""}
+                            </strong>
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {/* Clearly labeled decision attributes */}
@@ -643,14 +644,11 @@ export default function DecisionFlowDiagram({
               )}
             </div>
           ) : (
-            <div className="outcome-approved-strip">
-              <CheckCircle2 size={18} />
-              <div>
-                <strong>Auto-Approved Automatically</strong>
-                <p>
-                  Order total ({money(activeOrder.total_cents)}) is within your {money(maxApproveCents)} workspace auto-approve limit and passed all allergen, reliability, and substitution guardrails.
-                </p>
-              </div>
+            <div className="outcome-approved-facts">
+              <span><strong>Delivery:</strong> {deliveryDateText}</span>
+              <span><strong>Fulfilled:</strong> {firstItem ? `${firstItem.quantity}×${chosenTotalQty ? ` (${chosenTotalQty})` : ""}` : "Confirmed"}</span>
+              {bestOption?.product.vendor && <span><strong>Supplier:</strong> {bestOption.product.vendor}</span>}
+              <span><strong>Allergens:</strong> {excludedSet.size > 0 ? `Cleared (${excludedAllergensText})` : "Cleared"}</span>
             </div>
           )}
         </section>
