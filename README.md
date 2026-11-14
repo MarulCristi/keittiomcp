@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Keittiö Purchasing
 
 Keittiö is a local kitchen purchasing workspace. The Next.js dashboard uses the FastAPI backend for catalog queries, purchase orders, approvals, and guardrail settings. FastMCP exposes the same four purchasing operations to MCP clients.
@@ -62,3 +63,6 @@ The Junction specification in [backend/openapi.json](backend/openapi.json) provi
 For demo order creation, pass `{"items":[{"product_id":"AIMO-201","quantity":12}]}`. The dashboard also uses `GET /api/workspace`, `PUT /api/guardrails`, and `PATCH /api/orders/{order_id}`.
 
 Connect a Streamable HTTP MCP client to `http://127.0.0.1:8000/mcp`. To use stdio, run `python mcp_server.py` from `backend` with the virtual environment's Python interpreter.
+=======
+# keittiomcp
+>>>>>>> ade35898978cd84ecd3db8d972715bf175d96ce9

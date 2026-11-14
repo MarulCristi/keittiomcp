@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from mcp_server import mcp
 from valio_client import (
-    Allergen, Availability, Guardrails, ProcurementError, Product, ProductId,
+    Allergen, Availability, Guardrails, ProcurementError, ProcurementPlan, Product, ProductId,
     PurchaseOrder, PurchaseOrderRequest, SearchTerm, Workspace, client,
 )
 
@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
         yield
 
 
-app = FastAPI(title="Keittiö Purchasing API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Keittiö Purchasing API", version="0.2.0", lifespan=lifespan)
 
 
 @app.exception_handler(ProcurementError)
@@ -37,7 +37,7 @@ def search_products(query: SearchTerm) -> list[Product]:
 
 @app.get("/api/check_availability")
 def check_availability(
-    product_id: ProductId, quantity: Annotated[int, Query(ge=1, le=1000)] = 1,
+    product_id: ProductId, quantity: Annotated[int, Query(ge=1, le=10000)] = 1,
     requested_date: date | None = None, customer: Annotated[str | None, Query(min_length=1)] = None,
 ) -> Availability:
     return client.check_availability(product_id, quantity, requested_date, customer)
@@ -47,8 +47,22 @@ def check_availability(
 def suggest_substitutes(
     product_id: ProductId,
     exclude_allergens: Annotated[list[Allergen] | None, Query(max_length=6)] = None,
+    requested_date: date | None = None,
+    enrich_live: bool = True,
 ) -> list[Product]:
-    return client.suggest_substitutes(product_id, exclude_allergens or [])
+    return client.suggest_substitutes(
+        product_id, exclude_allergens or [], requested_date=requested_date, enrich_live=enrich_live
+    )
+
+
+@app.get("/api/plan_procurement")
+def plan_procurement(
+    query: SearchTerm,
+    target_volume_liters_or_kg: Annotated[float, Query(gt=0, le=100_000)] = 1000.0,
+    requested_date: date | None = None,
+    exclude_allergens: Annotated[list[Allergen] | None, Query(max_length=6)] = None,
+) -> ProcurementPlan:
+    return client.plan_procurement(query, target_volume_liters_or_kg, requested_date, exclude_allergens)
 
 
 @app.post("/api/create_purchase_order", status_code=201)
