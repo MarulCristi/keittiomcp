@@ -162,6 +162,7 @@ button:disabled { opacity: .5; }
 .shell { min-height: calc(100dvh - 165px); padding-bottom: 36px; }
 .home-purchasing { margin-top: 24px; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
 .home-purchasing .chat-panel { position: static; height: 610px; }
+.dashboard-grid.demo-review { grid-template-columns: minmax(0, 1fr); max-width: 800px; }
 .order-products, .order-requester { display: block; font-size: 12px; line-height: 1.5; margin-top: 5px; }
 .order-products { color: var(--ink); }
 .order-requester { color: var(--accent); }

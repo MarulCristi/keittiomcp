@@ -270,6 +270,7 @@ export default function Dashboard() {
       for (const name of workspace?.guardrails.review_allergens ?? []) params.append("exclude_allergens", name);
       const products = await request<Product[]>(`suggest_substitutes?${params}`);
       setMessages((previous) => [...previous, { role: "agent", text: products.length ? "Review the proposed replacements and their trade-offs. Check pack sizes before confirming quantities." : "No alternatives were returned.", products, substitutedFor: selection.product.product_id, requestedDate: date, requestedQuantity: quantity }]);
+      setView("overview");
     } catch (cause) {
       setActionError(errorMessage(cause));
     } finally {
@@ -357,7 +358,7 @@ export default function Dashboard() {
 
         {workspaceError && <div className="connection-notice" role="status">
           <div><strong>{workspace ? "Showing the last loaded workspace" : "The purchasing service is disconnected"}</strong><p>Use Refresh workspace to retry the connection.</p></div>
-          {!workspace && view !== "demo" && <button type="button" className="secondary-button" onClick={() => { setShowSamples(true); setView("demo"); }}>Explore sample products</button>}
+          {!workspace && view !== "overview" && <button type="button" className="secondary-button" onClick={() => { setShowSamples(true); setView("overview"); }}>Explore sample products</button>}
         </div>}
         {actionError && <p className="error workspace-error" role="alert">{actionError}</p>}
         {decisionNotice && view !== "approvals" && <p className="decision-feedback" role="status">{decisionNotice}</p>}
@@ -381,8 +382,8 @@ export default function Dashboard() {
 
         {view === "demo" && <RequestPlanner key={`${preview}:${previewVersion}`} request={request} connected={Boolean(workspace) && !workspaceError} busy={Boolean(activeAction) || sending} onBusy={setActiveAction}
           onSelect={(product, quantity, date) => setSelection({ product, sample: false, quantity, date })} />}
-        <div className={`dashboard-grid ${view === "overview" ? "home-purchasing" : ""}`} hidden={view !== "demo" && view !== "overview"}>
-          <section className="panel chat-panel" aria-labelledby="chat-title">
+        <div className={`dashboard-grid ${view === "overview" ? "home-purchasing" : "demo-review"}`} hidden={view !== "demo" && view !== "overview"}>
+          {view === "overview" && <section className="panel chat-panel" aria-labelledby="chat-title">
             <div className="chat-header">
               <div className="chat-icon"><Bot size={23} strokeWidth={1.75} /></div>
               <div>
@@ -443,7 +444,7 @@ export default function Dashboard() {
               </form>
               <p className="chat-note"><CircleHelp size={13} /> {preview ? "Simulated actions are recorded in this browser session." : workspace ? liveSupplier ? "Connected to Junction’s mock catalog." : "Demo orders are recorded locally." : "Sample preview is available above. Orders require a connection."}</p>
             </div>
-          </section>
+          </section>}
 
           <aside className="right-panel" aria-label="Purchasing controls">
             <div ref={reviewAnchor} tabIndex={-1} className="review-anchor" hidden={!selection && view === "overview"}>

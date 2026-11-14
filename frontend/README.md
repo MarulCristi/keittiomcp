@@ -28,7 +28,7 @@ The existing read-only samples are also available in disconnected service mode:
 
 Open **Approvals** and expand **Preview an example approval** to see the brief’s €1,450 sample order and the rule that triggers review.
 
-To try the product review, open **Demo tools** while the purchasing service is disconnected:
+To try the product review, open **Overview** while the purchasing service is disconnected:
 
 1. Click **Explore sample products**.
 2. Choose **Review product** on the lactose-free cooking cream.
@@ -53,7 +53,7 @@ See [INTEGRATION.md](INTEGRATION.md) for the frontend connection points and prop
 ## Integrated smoke test (requires the backend)
 
 1. Confirm the connection label and saved purchasing rules load.
-2. Open **Demo tools**, search for a product and choose **Review product**.
+2. Open **Overview**, search for a product in the assistant and choose **Review product**.
 3. Set a quantity and click **Check price & availability**.
 4. Verify unknown prices, unavailable quantities, sales blocks, and shortages do not enable the new order button.
 5. In `demo` mode, a confirmed available quantity with a confirmed EUR price enables **Create demo order**. Changing quantity requires another lookup.
@@ -64,7 +64,7 @@ Use **Refresh workspace** to retrieve orders created by an external client. The 
 
 Both `demo` and `junction` modes can create a recorded mock order after a successful availability check. The backend controls the final decision and submission capabilities. Review CHALLENGE-COVERAGE.md for remaining integration requirements.
 
-Demo tools also includes a request planner for total litres/kg, delivery date and allergen exclusions. Product cards display supplier reliability and sustainability fields when supplied. Policies supports the backend's reliability threshold and substitution approval setting.
+The chatbot appears only on Overview. Demo tools contains the request planner for total litres/kg, delivery date and allergen exclusions, plus product review. Finding alternatives from a review opens their results in the Overview assistant. Product cards display supplier reliability and sustainability fields when supplied. Policies supports the backend's reliability threshold and substitution approval setting.
 
 ## Checks
 
