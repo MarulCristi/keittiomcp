@@ -184,7 +184,6 @@ export default function Dashboard() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [thinkingStage, setThinkingStage] = useState(0);
   const [selection, setSelection] = useState<{ product: Product; sample: boolean; quantity?: number; date?: string; substitutedFor?: string } | null>(null);
   const [showSamples, setShowSamples] = useState(false);
   const [scheduleState, setScheduleState] = useState<ScheduleWorkspaceState | null>(null);
@@ -777,21 +776,12 @@ export default function Dashboard() {
     setInput("");
     setMessages((previous) => [...previous, { role: "user", text: message }]);
     setSending(true);
-    setThinkingStage(1);
-    const t1 = setTimeout(() => setThinkingStage(2), 450);
-    const t2 = setTimeout(() => setThinkingStage(3), 950);
-    const t3 = setTimeout(() => setThinkingStage(4), 1450);
     let reply: Omit<Message, "role">;
     try {
       reply = await respond(message);
     } catch (error) {
       reply = { text: errorMessage(error) };
       void refreshSideData();
-    } finally {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-      setThinkingStage(0);
     }
     setMessages((previous) => [...previous, { role: "agent", ...reply }]);
     setSending(false);
@@ -1210,20 +1200,22 @@ export default function Dashboard() {
                 </div>
               ))}
               {sending ? (
-                <div className="step-progress-card" role="status">
-                  <div className="step-progress-bar">
-                    <span className={thinkingStage >= 1 ? "active" : ""} />
-                    <span className={thinkingStage >= 2 ? "active" : ""} />
-                    <span className={thinkingStage >= 3 ? "active" : ""} />
-                    <span className={thinkingStage >= 4 ? "active" : ""} />
+                <div className="message" role="status" aria-live="polite" aria-label="Purchasing assistant is thinking">
+                  <div className="message-icon is-thinking"><Sparkles size={16} /></div>
+                  <div className="message-body">
+                    <span className="message-author">Purchasing assistant</span>
+                    <div className="thinking-bubble">
+                      <div className="thinking-status-row">
+                        <span className="thinking-shimmer-text">Thinking</span>
+                        <span className="thinking-dots" aria-hidden="true">
+                          <span />
+                          <span />
+                          <span />
+                        </span>
+                      </div>
+                      <div className="thinking-wave-bar" aria-hidden="true" />
+                    </div>
                   </div>
-                  <strong>
-                    {thinkingStage <= 1 && "Step 1/4 · Filtering GS1 category & dietary rules…"}
-                    {thinkingStage === 2 && "Step 2/4 · Ranking SKUs by reliability, CO2 & price…"}
-                    {thinkingStage === 3 && "Step 3/4 · Calculating pack math & live Valio stock…"}
-                    {thinkingStage >= 4 && "Step 4/4 · Verifying €250 guardrail & HMAC quote lock…"}
-                  </strong>
-                  <small>Preparing top 3 product comparisons, photos &amp; approval check…</small>
                 </div>
               ) : null}
               <div ref={chatEnd} />

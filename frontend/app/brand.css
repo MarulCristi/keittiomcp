@@ -174,12 +174,57 @@ button:disabled { opacity: .5; }
 .markdown-bubble code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--tint); color: var(--accent-dark); padding: 2px 6px; border-radius: 4px; }
 .bubble, .product-card, .queue-card, .preview-banner, .connection-notice { border: 0; box-shadow: 0 3px 12px rgb(7 59 112 / .06); }
 .prompts button, .allergen-options label, .secondary-button { border: 0; box-shadow: 0 1px 4px rgb(7 59 112 / .07); }
-.step-progress-card { margin: 8px 0 12px 40px; padding: 12px 15px; border-radius: 8px; border: 0; background: var(--surface); box-shadow: 0 4px 14px rgb(7 59 112 / .07); max-width: 560px; }
-.step-progress-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px; }
-.step-progress-bar span { height: 4px; border-radius: 99px; background: var(--line); transition: background-color .2s; }
-.step-progress-bar span.active { background: var(--accent); }
-.step-progress-card strong { display: block; font-size: 12px; color: var(--accent-dark); }
-.step-progress-card small { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+/* AI "Thinking" Animation */
+.message-icon.is-thinking {
+  background: var(--tint); color: var(--accent-dark);
+  animation: thinking-icon-pulse 1.8s ease-in-out infinite;
+}
+.thinking-bubble {
+  display: inline-flex; flex-direction: column; gap: 7px;
+  padding: 10px 14px; border-radius: 10px;
+  background: var(--surface); box-shadow: 0 3px 12px rgb(7 59 112 / .06);
+  max-width: 260px;
+}
+.thinking-status-row { display: inline-flex; align-items: center; gap: 8px; }
+.thinking-shimmer-text {
+  font-size: 13px; font-weight: 600; letter-spacing: .01em;
+  background: linear-gradient(90deg, var(--slate-500) 0%, var(--slate-800) 45%, var(--accent-dark) 50%, var(--slate-800) 55%, var(--slate-500) 100%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: thinking-text-shimmer 1.8s linear infinite;
+}
+.thinking-dots { display: inline-flex; align-items: center; gap: 4px; }
+.thinking-dots span {
+  width: 5px; height: 5px; border-radius: 99px; background: var(--accent);
+  animation: thinking-dot-bounce 1.2s ease-in-out infinite;
+}
+.thinking-dots span:nth-child(2) { animation-delay: .16s; }
+.thinking-dots span:nth-child(3) { animation-delay: .32s; }
+.thinking-wave-bar {
+  position: relative; height: 3px; width: 160px; border-radius: 99px;
+  background: var(--slate-100); overflow: hidden;
+}
+.thinking-wave-bar::after {
+  content: ""; position: absolute; inset: 0; width: 45%; border-radius: 99px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: thinking-bar-sweep 1.4s ease-in-out infinite;
+}
+@keyframes thinking-text-shimmer {
+  0% { background-position: 120% 0; }
+  100% { background-position: -100% 0; }
+}
+@keyframes thinking-dot-bounce {
+  0%, 80%, 100% { transform: translateY(0) scale(.85); opacity: .45; }
+  40% { transform: translateY(-4px) scale(1.08); opacity: 1; }
+}
+@keyframes thinking-bar-sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(240%); }
+}
+@keyframes thinking-icon-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.08); opacity: .78; }
+}
 
 /* Inline Autonomous Decision: Minimalistic Steps + ChatGPT Top-3 + Clear Outcome */
 .decision-inline { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; width: 100%; font-family: "Libre Franklin Variable", "Libre Franklin", sans-serif; }
@@ -685,7 +730,8 @@ button:disabled { opacity: .5; }
 :root[data-theme="dark"] .settings-actions .secondary-button,
 :root[data-theme="dark"] .approval-card .queue-actions button:last-child { color: #0b1520; }
 :root[data-theme="dark"] .panel,
-:root[data-theme="dark"] .bubble { box-shadow: 0 6px 22px rgb(0 0 0 / .36); }
+:root[data-theme="dark"] .bubble,
+:root[data-theme="dark"] .thinking-bubble { box-shadow: 0 6px 22px rgb(0 0 0 / .36); }
 :root[data-theme="dark"] .chat-content { background: #0e1b29; }
 :root[data-theme="dark"] .bubble.markdown-bubble,
 :root[data-theme="dark"] .bubble.welcome { background: var(--surface); color: var(--ink); }
