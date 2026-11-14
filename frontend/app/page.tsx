@@ -11,6 +11,7 @@ import OrderReview from "./components/order-review";
 import RequestPlanner from "./components/request-planner";
 import AgentManagement from "./components/agent-management";
 import DecisionFlowDiagram from "./components/decision-flow-diagram";
+import WebImageReferences from "./components/web-image-references";
 import { AgentIcon, CartIcon, ApprovalIcon, ApprovedIcon } from "./components/dashboard-icons";
 import { createBrowserPreview, type ActivityEvent, type Agent } from "./lib/browser-preview";
 import { api, errorMessage, money, orderRequester, sampleProducts, statusLabels, type AgentExecutionResult, type Availability, type Guardrails, type Order, type PriorityMode, type Product } from "./lib/purchasing";
@@ -38,6 +39,13 @@ type Message = {
   requestedDate?: string;
   requestedQuantity?: number;
 };
+
+function imageReferenceQuery(message: Message) {
+  // Use the actual selected item (including a substitute), not the private chef request.
+  return (message.execution?.order?.items?.[0]?.name
+    || message.execution?.plans?.[0]?.options?.[0]?.product.name
+    || message.products?.[0]?.name || "").slice(0, 200);
+}
 const prompts = [
   { label: "Auto-approve (<= €250)", text: "Agent: 20 L of lactose-free milk for Monday", liveText: "Agent: 20 L of lactose-free milk for Monday", Icon: Check },
   { label: "Challenge brief (1,000 L milk)", text: "Agent: 1000 L of lactose-free milk for Monday", liveText: "Agent: 1000 L of lactose-free milk for Monday", Icon: Sparkles },
@@ -383,21 +391,10 @@ export default function Dashboard() {
         <div className="activity-details">
           <p>{describeOrder(order)}</p>
           {order.reasons.length > 0 && <ul>{order.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
-          {order.decision_trace && order.decision_trace.length > 0 && <div className="algorithm-steps-container" style={{ marginTop: 10 }}>
-            <div className="algorithm-steps-header"><span>Algorithm thinking steps (click to expand)</span></div>
-            {order.decision_trace.map((step, index) => {
-              const [head, ...rest] = step.split(":");
-              const body = rest.join(":").trim();
-              return (
-                <details key={index} className="algo-step-dropdown">
-                  <summary>
-                    <span className="algo-step-num sky">Step {index + 1}</span>
-                    <span className="algo-step-title">{head.replace(/^\d+\.\s*/, "")}</span>
-                  </summary>
-                  <div className="algo-step-body"><p><code>{body || step}</code></p></div>
-                </details>
-              );
-            })}
+          {order.decision_trace && order.decision_trace.length > 0 && <div style={{ marginTop: 10 }}>
+            <button type="button" className="bubble-flow-btn" onClick={() => { setActiveFlow({ order }); setView("overview"); }}>
+              <ArrowDownUp size={13} /> Inspect selection flow diagram
+            </button>
           </div>}
           {(preview || Boolean(workspace)) && events.some((event) => event.order_id === order.id) && <div className="order-timeline">
             <h3>Order history</h3>
@@ -579,37 +576,31 @@ export default function Dashboard() {
                   <div className="message-body">
                     <span className="message-author">{message.role === "user" ? "You" : "Purchasing assistant"}</span>
                     <div className="bubble markdown-bubble">
-                      {message.execution ? (
-                        <DecisionFlowDiagram
-                          execution={message.execution}
-                          order={message.execution.order}
-                          guardrails={workspace?.guardrails ?? null}
-                          onOpenApprovals={() => setView("approvals")}
-                        />
+                      {message.headline && <strong style={{ display: "block", marginBottom: 4 }}>{message.headline}</strong>}
+                      {message.bullets && message.bullets.length > 0 ? (
+                        <ul>
+                          {message.bullets.map((b, bIdx) => (
+                            <li key={bIdx}>
+                              <strong>{b.label}:</strong> {b.code && <><code>{b.code}</code> </>}{b.value}
+                            </li>
+                          ))}
+                        </ul>
                       ) : (
-                        <>
-                          <p style={{ margin: 0, color: "var(--ink)" }}>{message.text}</p>
-                          {message.thinking && message.thinking.length > 0 && (
-                            <div className="algorithm-steps-container" style={{ marginTop: 10 }}>
-                              <div className="algorithm-steps-header"><span>Algorithm thinking steps (click to expand)</span></div>
-                              {message.thinking.map((step, sIdx) => {
-                                const [head, ...rest] = step.split(":");
-                                const body = rest.join(":").trim();
-                                return (
-                                  <details key={sIdx} className="algo-step-dropdown">
-                                    <summary>
-                                      <span className="algo-step-num sky">Step {sIdx + 1}</span>
-                                      <span className="algo-step-title">{head.replace(/^\d+\.\s*/, "")}</span>
-                                    </summary>
-                                    <div className="algo-step-body"><p><code>{body || step}</code></p></div>
-                                  </details>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </>
+                        <p style={{ margin: 0, color: "var(--ink)" }}>{message.text}</p>
+                      )}
+                      {(message.execution || (message.thinking && message.thinking.length > 0)) && (
+                        <div>
+                          <button
+                            type="button"
+                            className="bubble-flow-btn"
+                            onClick={() => setActiveFlow({ execution: message.execution ?? null, order: message.execution?.order ?? null })}
+                          >
+                            <ArrowDownUp size={13} /> Inspect selection flow diagram →
+                          </button>
+                        </div>
                       )}
                     </div>
+                    {message.role === "agent" && imageReferenceQuery(message) && <WebImageReferences query={imageReferenceQuery(message)} />}
                     {message.products && productCards(message.products, Boolean(message.sample), message.substitutedFor, message.requestedDate, message.requestedQuantity)}
                   </div>
                 </div>
@@ -628,7 +619,7 @@ export default function Dashboard() {
                     {thinkingStage === 3 && "Step 3/4 · Calculating pack math & live Valio stock…"}
                     {thinkingStage >= 4 && "Step 4/4 · Verifying €250 guardrail & HMAC quote lock…"}
                   </strong>
-                  <small>Running autonomous selection & guardrail verification…</small>
+                  <small>Updating the selection flow diagram on the right…</small>
                 </div>
               ) : null}
               <div ref={chatEnd} />
@@ -658,6 +649,15 @@ export default function Dashboard() {
           </section>}
 
           <aside className="right-panel" aria-label="Purchasing controls">
+            {view === "overview" && activeFlow && (
+              <DecisionFlowDiagram
+                execution={activeFlow.execution}
+                order={activeFlow.order}
+                guardrails={workspace?.guardrails ?? null}
+                onClose={() => setActiveFlow(null)}
+                onOpenApprovals={() => setView("approvals")}
+              />
+            )}
             <div ref={reviewAnchor} tabIndex={-1} className="review-anchor" hidden={!selection && view === "overview"}>
               {selection ? <OrderReview key={`${selection.sample}:${selection.product.product_id}:${selection.quantity}:${selection.date}:${selection.substitutedFor}`} product={selection.product} sample={selection.sample}
                 request={request} preview={preview}

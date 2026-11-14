@@ -1,7 +1,7 @@
 # Frontend scope and working agreement
 
-- This project is a two-person Junction hackathon entry for the Valio Aimo autonomous purchasing challenge. The user's partner owns the backend; this assistant owns only the frontend.
-- Do not edit, configure, or run the backend. Keep authored changes inside `frontend/`.
+- This project is a two-person Junction hackathon entry for the Valio Aimo autonomous purchasing challenge. The user has now authorized coordinated frontend and backend work to connect the project, including Oxylabs website image previews.
+- Keep changes scoped to the requested integration and preserve the partner's purchasing logic. Do not push anything unless the user explicitly asks; this overrides earlier standing push instructions.
 - Before starting each new task, inspect Git status and pull the latest GitHub changes with `git pull --ff-only`. Preserve local changes; do not reset or discard work to make a pull succeed. Repository synchronization can bring in the partner's backend changes.
 - The user is a first-time developer. Explain changes in plain language, provide concrete preview/testing steps, and clearly distinguish implemented behavior from proposals and sample-data previews from integrated behavior.
 - The deadline stated on 14 November 2026 is tomorrow morning. Favor a small, reliable demonstration over additional features. Reconfirm timing if working after that deadline.
@@ -39,7 +39,7 @@ Never imply that a frontend warning enforces backend policy. Never silently rela
 
 Do not imply that an approval is a submitted supplier order. Reflect the actual backend state and clearly label mock behavior. Do not fabricate an audit trail, autonomous reasoning, or successful actions in an integrated demo.
 
-The reviewed frontend uses fixed command parsing for chat. Do not promise unrestricted natural-language purchasing unless the integrated implementation supports it. Coordinate required API capabilities with the backend owner through the user; do not implement backend changes yourself.
+Describe the agent capabilities actually supported by the connected implementation. Coordinate API changes with the backend owner through the user. Website thumbnails are visual references, never evidence of availability, dietary suitability, price or successful purchasing.
 
 Defer recipe planning, predictive purchasing, payments, full marketplace functionality, a new authentication system, carbon estimates, and broad analytics until the core demo is complete. Display sustainability labels only when present in supplied data.
 

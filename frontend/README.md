@@ -13,6 +13,8 @@ Open the URL printed by the terminal (normally http://localhost:3000). Keep the 
 
 ## Try the screens without a backend
 
+Website image references are an optional live integration: after a chat product lookup or agent result, up to three small images appear beside the recorded selection, each linking to its original website. No images are generated. These are visual search references, not verified SKU images. The image lookup runs separately and cannot block an order. Setup and backend test instructions are in [backend/IMAGE_REFERENCES.md](../backend/IMAGE_REFERENCES.md). Browser preview keeps purchasing simulated but can use the real image lookup if the backend is running with an Oxylabs key.
+
 Click **Start browser preview** in the top bar. This loads a clearly labelled simulation that runs entirely in the browser:
 
 1. **Overview:** use the purchasing assistant to find products and review an order. Recent orders beside the chat show products, requester identity and status. Expand an order for its reasons and related activity.

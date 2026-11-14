@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from mcp_server import mcp
+from image_references import ImageReferences, image_search
 from valio_client import (
     ActivityEvent, AgentExecutionRequest, AgentExecutionResult, AgentProfile, AgentUpdate,
     Allergen, Availability, Guardrails, PriorityMode, ProcurementError, ProcurementPlan,
@@ -116,6 +117,11 @@ def list_events() -> list[ActivityEvent]:
 @app.post("/api/agent_execute")
 def agent_execute(request: AgentExecutionRequest) -> AgentExecutionResult:
     return client.execute_trade_request(request)
+
+
+@app.get("/api/image_references")
+async def image_references(query: Annotated[str, Query(min_length=2, max_length=200)]) -> ImageReferences:
+    return await image_search.lookup(query)
 
 
 app.mount("/", mcp_app)
