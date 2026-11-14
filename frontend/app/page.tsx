@@ -11,6 +11,7 @@ import OrderReview from "./components/order-review";
 import RequestPlanner from "./components/request-planner";
 import AgentManagement from "./components/agent-management";
 import DecisionFlowDiagram from "./components/decision-flow-diagram";
+import WebImageReferences from "./components/web-image-references";
 import { AgentIcon, CartIcon, ApprovalIcon, ApprovedIcon } from "./components/dashboard-icons";
 import { createBrowserPreview, type ActivityEvent, type Agent } from "./lib/browser-preview";
 import { api, errorMessage, money, orderRequester, sampleProducts, statusLabels, type AgentExecutionResult, type Availability, type Guardrails, type Order, type PriorityMode, type Product } from "./lib/purchasing";
@@ -38,6 +39,13 @@ type Message = {
   requestedDate?: string;
   requestedQuantity?: number;
 };
+
+function imageReferenceQuery(message: Message) {
+  // Use the actual selected item (including a substitute), not the private chef request.
+  return (message.execution?.order?.items?.[0]?.name
+    || message.execution?.plans?.[0]?.options?.[0]?.product.name
+    || message.products?.[0]?.name || "").slice(0, 200);
+}
 const prompts = [
   { label: "Auto-approve (<= €250)", text: "Agent: 20 L of lactose-free milk for Monday", liveText: "Agent: 20 L of lactose-free milk for Monday", Icon: Check },
   { label: "Challenge brief (1,000 L milk)", text: "Agent: 1000 L of lactose-free milk for Monday", liveText: "Agent: 1000 L of lactose-free milk for Monday", Icon: Sparkles },
@@ -592,6 +600,7 @@ export default function Dashboard() {
                         </div>
                       )}
                     </div>
+                    {message.role === "agent" && imageReferenceQuery(message) && <WebImageReferences query={imageReferenceQuery(message)} />}
                     {message.products && productCards(message.products, Boolean(message.sample), message.substitutedFor, message.requestedDate, message.requestedQuantity)}
                   </div>
                 </div>
