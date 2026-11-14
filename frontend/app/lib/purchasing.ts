@@ -17,8 +17,9 @@ export type Product = {
 };
 export type Order = {
   id: string;
-  agent_id?: string;
-  agent_name?: string;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  buyer_name?: string | null;
   items: { product_id: string; name: string; quantity: number; unit: string }[];
   total_cents: number;
   status: "pending" | "auto_approved" | "approved" | "rejected";
@@ -49,6 +50,14 @@ export type Availability = {
 
 export const money = (cents: number) => new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" }).format(cents / 100);
 export const statusLabels = { pending: "Pending approval", auto_approved: "Auto-approved", approved: "Approved", rejected: "Rejected" };
+
+// Prefer an explicit identity supplied with the order; never infer a person from approval status.
+export function orderRequester(order: Pick<Order, "agent_name" | "agent_id" | "buyer_name">) {
+  if (order.agent_name?.trim()) return `Requested by ${order.agent_name.trim()} · Agent`;
+  if (order.agent_id?.trim()) return `Requested by agent ${order.agent_id.trim()}`;
+  if (order.buyer_name?.trim()) return `Requested by ${order.buyer_name.trim()} · Person`;
+  return "Requester not provided";
+}
 
 export function parseQuantity(value: string): number | null {
   if (!/^\d+$/.test(value)) return null;

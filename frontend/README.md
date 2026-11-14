@@ -15,11 +15,11 @@ Open the URL printed by the terminal (normally http://localhost:3000). Keep the 
 
 Click **Start browser preview** in the top bar. This loads a clearly labelled simulation that runs entirely in the browser:
 
-1. **Overview:** try a routine purchase, an over-limit purchase, and a blocked purchase.
+1. **Overview:** use the purchasing assistant to find products and review an order. Recent orders beside the chat show products, requester identity and status. Expand an order for its reasons and related activity.
 2. **Approvals:** approve or reject the pending example; it leaves the queue and appears in Activity.
 3. **Agents:** change permissions or pause Kitchen Assistant, save, then try a lookup or purchase in Demo tools to see the effect.
 4. **Policies:** change the automatic approval limit and save. New simulated orders use the saved rules.
-5. **Activity:** filter results or search, then expand an event to read its explanation.
+5. **Activity:** inspect the combined order history, including who requested each order. Related creation and approval events appear inside the order rather than in a separate agent activity panel.
 6. **Demo tools:** enter `milk` in the purchasing planner, choose a quantity, find options, review one, check availability, and create a simulated order.
 
 **Reset preview** restores the starting examples. Reloading the page also clears these session-only changes. **Use service connection** returns to the separate backend connection mode. Browser preview never creates a supplier order or changes backend permissions; its illustrative prices, stock, delivery dates and decisions are not supplier confirmations.

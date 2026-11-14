@@ -10,9 +10,8 @@ import Image from "next/image";
 import OrderReview from "./components/order-review";
 import RequestPlanner from "./components/request-planner";
 import AgentManagement from "./components/agent-management";
-import EventLog from "./components/event-log";
 import { createBrowserPreview } from "./lib/browser-preview";
-import { api, errorMessage, money, sampleProducts, statusLabels, type Availability, type Guardrails, type Order, type Product } from "./lib/purchasing";
+import { api, errorMessage, money, orderRequester, sampleProducts, statusLabels, type Availability, type Guardrails, type Order, type Product } from "./lib/purchasing";
 
 const allergens = [
   { name: "milk", label: "Milk", Icon: Milk },
@@ -236,13 +235,19 @@ export default function Dashboard() {
     return <div className="activity-list">
       {orders.map((order) => <details key={order.id} className="activity-entry">
         <summary>
-          <div><strong>{order.id}</strong><time dateTime={order.updated_at}>{dates.format(new Date(order.updated_at))}</time></div>
+          <div><strong>{order.id}</strong><span className="order-products">{describeOrder(order)}</span><span className="order-requester">{orderRequester(order)}</span><time dateTime={order.updated_at}>{dates.format(new Date(order.updated_at))}</time></div>
           <span className={`status ${order.status}`}><span />{statusLabels[order.status]}</span>
           <strong>{money(order.total_cents)}</strong>
         </summary>
         <div className="activity-details">
           <p>{describeOrder(order)}</p>
           {order.reasons.length > 0 && <ul>{order.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
+          {preview && events.some((event) => event.order_id === order.id) && <div className="order-timeline">
+            <h3>Order history</h3>
+            <ol>{events.filter((event) => event.order_id === order.id).map((event) => <li key={event.id}>
+              <strong>{event.action}</strong><p>{event.detail}</p><time dateTime={event.timestamp}>{dates.format(new Date(event.timestamp))}</time>
+            </li>)}</ol>
+          </div>}
           {order.trust_verification && <dl className="review-facts">
             <div><dt>Verification protocol</dt><dd>{order.trust_verification.protocol}</dd></div>
             <div><dt>Verified at</dt><dd>{order.trust_verification.verified_at}</dd></div>
@@ -313,25 +318,6 @@ export default function Dashboard() {
     setPreview(nextPreview);
   }
 
-  async function runScenario(kind: "routine" | "expensive" | "blocked") {
-    if (!preview || activeAction || sending) return;
-    setActiveAction("scenario");
-    setActionError("");
-    setDecisionNotice("");
-    try {
-      const items = kind === "expensive"
-        ? [{ product_id: "AIMO-101", quantity: 1000 }, { product_id: "AIMO-102", quantity: 50 }]
-        : [{ product_id: "AIMO-101", quantity: 120 }];
-      const order = await request<Order>("create_purchase_order", "POST", { items, agent_id: kind === "blocked" ? "inventory" : "kitchen" });
-      updateOrder(order);
-      setDecisionNotice(`Simulated ${order.id}: ${statusLabels[order.status]}. Current saved rules were applied.`);
-    } catch (cause) {
-      setDecisionNotice(`Simulation stopped: ${errorMessage(cause)} See Agent activity for the recorded attempt.`);
-    } finally {
-      setActiveAction("");
-    }
-  }
-
   return (
     <div className="min-h-screen">
       <header className="topbar">
@@ -383,22 +369,6 @@ export default function Dashboard() {
             <div className="panel metric-card"><div className="metric-icon coral"><ClipboardList size={28} aria-hidden="true" /></div><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><small>{pending.length ? "A decision needs your attention" : "No pending decisions"}</small><button type="button" className="primary-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={16} /></button></div>
             <div className="panel metric-card"><div className="metric-icon teal"><Check size={28} aria-hidden="true" /></div><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small><button type="button" className="text-button" onClick={() => setView("policies")}>View policies <ArrowRight size={16} /></button></div>
           </dl>
-          <div className={`overview-details ${preview ? "has-scenarios" : ""}`}>
-          <section className="panel side-panel recent-orders" aria-labelledby="recent-activity">
-            <div className="control-heading"><h2 id="recent-activity">Recent order activity</h2><button type="button" className="text-button" onClick={() => setView("activity")}>View all activity <ArrowRight size={16} /></button></div>
-            {activity(audit.slice(0, 5))}
-            {preview && <p className="panel-footnote">Sample orders · changes reset on reload</p>}
-          </section>
-          {preview && <section className="panel scenario-panel" aria-labelledby="scenarios-title">
-            <h2 id="scenarios-title">Try a purchasing scenario</h2><p>Each request uses your current preview permissions and policies.</p>
-            <div className="scenario-buttons">
-              <button type="button" disabled={Boolean(activeAction) || sending} onClick={() => void runScenario("routine")}><strong>Routine purchase</strong><span>Kitchen Assistant · €150</span></button>
-              <button type="button" disabled={Boolean(activeAction) || sending} onClick={() => void runScenario("expensive")}><strong>Above the limit</strong><span>Kitchen Assistant · €1,450</span></button>
-              <button type="button" disabled={Boolean(activeAction) || sending} onClick={() => void runScenario("blocked")}><strong>Permission check</strong><span>Inventory Agent attempts a purchase</span></button>
-            </div>
-          </section>}
-          </div>
-          {preview && <EventLog events={events.slice(0, 5)} />}
         </div>}
 
         {view === "agents" && preview && <AgentManagement agents={agents} request={request} busy={Boolean(activeAction) || sending} onBusy={setActiveAction} onChanged={() => void loadWorkspace(undefined, true)} />}
@@ -411,12 +381,12 @@ export default function Dashboard() {
 
         {view === "demo" && <RequestPlanner key={`${preview}:${previewVersion}`} request={request} connected={Boolean(workspace) && !workspaceError} busy={Boolean(activeAction) || sending} onBusy={setActiveAction}
           onSelect={(product, quantity, date) => setSelection({ product, sample: false, quantity, date })} />}
-        <div className="dashboard-grid" hidden={view !== "demo"}>
+        <div className={`dashboard-grid ${view === "overview" ? "home-purchasing" : ""}`} hidden={view !== "demo" && view !== "overview"}>
           <section className="panel chat-panel" aria-labelledby="chat-title">
             <div className="chat-header">
               <div className="chat-icon"><Bot size={23} strokeWidth={1.75} /></div>
               <div>
-                <h2 id="chat-title">Catalog and order tester</h2>
+                <h2 id="chat-title">Purchasing assistant</h2>
                 <p><span className={workspace ? "online-dot" : "offline-dot"} /> {preview ? "Using the simulated catalog" : workspace ? "Connected to purchasing service" : workspaceError ? "Waiting for purchasing service" : "Connecting…"}</p>
               </div>
               <span className="supplier-label">{preview ? "Sample catalog" : "Valio Aimo catalog"}</span>
@@ -426,10 +396,10 @@ export default function Dashboard() {
               <div className="message">
                 <div className="message-icon"><Sparkles size={16} /></div>
                 <div className="message-body">
-                  <span className="message-author">Demo tools</span>
+                  <span className="message-author">Purchasing assistant</span>
                   <div className="bubble welcome">
                     <strong>What are you sourcing today?</strong>
-                    <p>Find a product, choose how much you need, and review its price and availability.{workspace?.supplier_mode === "demo" ? " Create a demo order to see the approval decision." : ""}</p>
+                    <p>Find a product, choose how much you need, and review its price and availability. Try “Find milk”, “Check SKU”, or “Substitutes for SKU”.{workspace?.supplier_mode === "demo" ? " Create a demo order to see the approval decision." : ""}</p>
                   </div>
                 </div>
               </div>
@@ -467,7 +437,7 @@ export default function Dashboard() {
                 ))}
               </div>
               <form className="composer" onSubmit={(event) => { event.preventDefault(); void send(input); }}>
-                <label className="sr-only" htmlFor="chat-input">Enter a demo command</label>
+                <label className="sr-only" htmlFor="chat-input">Message the purchasing assistant</label>
                 <input ref={chatInput} id="chat-input" value={input} maxLength={120} disabled={!workspace} onChange={(event) => setInput(event.target.value)} placeholder={workspace ? "Try: Find cooking cream" : "Connect the purchasing service to search"} />
                 <button type="submit" aria-label="Send message" disabled={sending || Boolean(activeAction) || !workspace || !input.trim()}><ArrowUp size={19} /></button>
               </form>
@@ -476,7 +446,7 @@ export default function Dashboard() {
           </section>
 
           <aside className="right-panel" aria-label="Purchasing controls">
-            <div ref={reviewAnchor} tabIndex={-1} className="review-anchor">
+            <div ref={reviewAnchor} tabIndex={-1} className="review-anchor" hidden={!selection && view === "overview"}>
               {selection ? <OrderReview key={`${selection.sample}:${selection.product.product_id}:${selection.quantity}:${selection.date}:${selection.substitutedFor}`} product={selection.product} sample={selection.sample}
                 request={request} preview={preview}
                 initialQuantity={selection.quantity} initialDate={selection.date} substitutedFor={selection.substitutedFor}
@@ -485,6 +455,11 @@ export default function Dashboard() {
                 onClose={() => setSelection(null)} onAlternatives={(date, quantity) => void findAlternatives(date, quantity)} /> :
                 <section className="panel review-placeholder"><ShoppingBasket size={25} /><h2>Your selection, explained</h2><p>Select a product to choose a quantity, check availability, and review purchasing rules before ordering.</p></section>}
             </div>
+            {view === "overview" && <section className="panel side-panel recent-orders" aria-labelledby="recent-activity">
+              <div className="control-heading"><h2 id="recent-activity">Recent orders</h2><button type="button" className="text-button" onClick={() => setView("activity")}>View all <ArrowRight size={16} /></button></div>
+              {activity(audit.slice(0, 5))}
+              {preview && <p className="panel-footnote">Sample orders · changes reset on reload</p>}
+            </section>}
           </aside>
         </div>
 
@@ -549,7 +524,7 @@ export default function Dashboard() {
                 {pending.map((order) => (
                   <article className="panel approval-card" key={order.id}>
                     <div className="control-heading"><h2>Order {order.id}</h2><span className="status pending"><span />Pending approval</span></div>
-                    <p className="approval-timestamp">{order.agent_name ?? "Agent unavailable"} · Updated <time dateTime={order.updated_at}>{dates.format(new Date(order.updated_at))}</time></p>
+                    <p className="approval-timestamp">{orderRequester(order)} · Updated <time dateTime={order.updated_at}>{dates.format(new Date(order.updated_at))}</time></p>
                     <ul className="approval-items">
                       {order.items.map((item, index) => <li key={`${item.product_id}:${index}`}><span>{item.name}</span><strong>{item.quantity.toLocaleString("en-GB")} × {item.unit}</strong></li>)}
                     </ul>
@@ -576,7 +551,6 @@ export default function Dashboard() {
             </section>}
 
         {view === "activity" && <div className="control-content">
-          {preview && <EventLog events={events} />}
           <section className="panel side-panel" aria-label="Recorded order activity"><h2>Order history</h2>{activity(audit)}</section>
         </div>}
       </main>

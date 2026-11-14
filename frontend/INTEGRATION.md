@@ -22,7 +22,9 @@ Agent management and detailed events currently run only in browser preview. Serv
 | `PUT /api/agents/{id}` | Editable `status`, `permissions`, `spending_limit_cents`; returns the saved agent. |
 | `GET /api/events` | Array of events: `id`, `agent_name`, `action`, `result` (`completed`, `pending`, `approved`, `rejected`, `blocked`), `detail`, `timestamp`, optional `order_id`. |
 
-The exact frontend types are exported from `browser-preview.ts`. `agent-management.tsx` and `event-log.tsx` are reusable presentation components. Once contracts are agreed, move the shared types to the service model, fetch real agents/events, and replace the service-mode placeholders with these components. Adapt labels such as the preview save notice at that point. Error/loading and empty states must remain explicit.
+The exact frontend types are exported from `browser-preview.ts`. `agent-management.tsx` is reusable. Related events are grouped by `order_id` inside each order's expanded history in `page.tsx`; there is no separate agent activity panel. Once contracts are agreed, move the shared types to the service model and fetch real agents/events. Adapt preview notices when integrating. Error/loading and empty states must remain explicit.
+
+Order attribution uses the existing `agent_name` / `agent_id` fields. The frontend also accepts optional `buyer_name` for a named person if the service supplies it in future. Current service records are agent-attributed; unknown identities display "Requester not provided". Approval status never determines who requested an order, and an approved record is not labelled as a completed supplier purchase.
 
 The backend must authenticate agent identity and enforce permissions, limits and approval decisions independently. Browser controls do not secure external MCP or REST clients. Activity must come from server events in connected mode.
 

@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canCreateOrder, parseQuantity } from "../app/lib/purchasing.ts";
+import { canCreateOrder, orderRequester, parseQuantity } from "../app/lib/purchasing.ts";
 
 const available = {
   name: "Test product", available_quantity: 24, available: true, available_date: null,
   sales_unit: "carton", sales_block: false, unit_price_cents: 345, currency: "EUR",
 };
+
+test("order attribution distinguishes supplied agents and people without guessing missing identities", () => {
+  assert.equal(orderRequester({ agent_name: "Kitchen Assistant" }), "Requested by Kitchen Assistant · Agent");
+  assert.equal(orderRequester({ buyer_name: "Anna" }), "Requested by Anna · Person");
+  assert.equal(orderRequester({ agent_id: "kitchen", buyer_name: "Anna" }), "Requested by agent kitchen");
+  assert.equal(orderRequester({ agent_name: null, buyer_name: "  " }), "Requester not provided");
+  assert.equal(orderRequester({}), "Requester not provided");
+});
 
 test("quantity rejects empty, fractional, negative, exponential and unsafe input", () => {
   for (const value of ["", "0", "-1", "1.5", "1e3", "Infinity", "10001", "9007199254740992"]) {

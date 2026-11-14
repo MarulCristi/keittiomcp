@@ -142,7 +142,7 @@ export function createBrowserPreview() {
       if (decision !== "approved" && decision !== "rejected") throw new Error("Choose approve or reject.");
       order.status = decision;
       order.updated_at = new Date().toISOString();
-      record(actor(order.agent_id), "Manager decision", decision, `Manager ${decision} the simulated order.`, order.id);
+      record(actor(order.agent_id ?? undefined), "Manager decision", decision, `Manager ${decision} the simulated order.`, order.id);
       response = order;
     } else if (route === "agents") {
       response = agents;

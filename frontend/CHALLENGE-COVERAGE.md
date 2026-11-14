@@ -25,7 +25,7 @@ Checked against the supplied Junction 2026 poster and repository revision 01e520
 
 ## Browser-only rehearsal
 
-The explicit **Browser preview** mode now supports simulated purchasing, approvals, editable per-agent permissions/limits/status, workspace policies, and searchable/filterable event explanations. It includes routine, over-limit and permission-blocked scenarios and uses the same request-planning and order-review screens. All preview data is synthetic and session-only. It does not establish backend enforcement, supplier delivery or fixed-price commitment. Agent and event screens remain awaiting agreed contracts in service mode; see INTEGRATION.md.
+The explicit **Browser preview** mode supports simulated purchasing, approvals, editable per-agent permissions/limits/status and workspace policies. The Overview includes the purchasing assistant and recent orders with requester attribution. Related events are nested within each order; separate scenario buttons and agent activity panels have been removed. All preview data is synthetic and session-only. It does not establish backend enforcement, supplier delivery or fixed-price commitment. Agent and event integration remains a separate task; see INTEGRATION.md.
 
 ## Service integration findings
 

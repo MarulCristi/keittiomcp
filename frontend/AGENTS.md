@@ -25,7 +25,7 @@ Judging weights:
 # Priorities and honesty
 
 1. Build KeittiöMCP as the manager's control centre for external purchasing agents. Start with the overview and Approval Centre.
-2. Keep the catalog and order tester under Demo tools. Display order details and reasons returned by the backend.
+2. Keep the purchasing chatbot on the Overview, with recent orders beside it. Demo tools retains structured planning. Show requester identity and order-linked activity within order history; do not show a separate agent activity panel or purchasing scenario buttons.
 3. Show supported workspace policies and recorded order history. Add agent management and tool-level activity when the backend provides their contracts.
 4. Rehearse automatic approval, human approval and a blocked purchase when those scenarios are supported by the connected mock backend.
 
