@@ -2,8 +2,8 @@
 
 import {
   ArrowDownUp, ArrowRight, ArrowUp, Award, Bot, CalendarClock, Check, ChevronDown, CircleHelp, ClipboardList,
-  Clock, Egg, FastForward, Fish, History, LayoutDashboard, Leaf, Maximize2, Milk, Minimize2, Nut, Pause, Play,
-  Plus, RefreshCw, Search, ShieldCheck, ShoppingBasket, Sparkles, SlidersHorizontal, Square,
+  Clock, Egg, FastForward, Fish, History, LayoutDashboard, Leaf, Maximize2, Milk, Minimize2, Moon, Nut, Pause, Play,
+  Plus, RefreshCw, Search, ShieldCheck, ShoppingBasket, Sparkles, SlidersHorizontal, Square, Sun,
   Tag, Trash2, Wheat,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
@@ -40,6 +40,7 @@ const priorityOptions: { id: PriorityMode; label: string; shortLabel: string; hi
 ];
 
 const PREFS_STORAGE_KEY = "keittio:preferences:v1";
+const THEME_STORAGE_KEY = "keittio:theme:v1";
 type StoredKitchenPrefs = { onboarded: boolean; priority_modes: PriorityMode[]; review_allergens: Allergen[] };
 
 function computeSmoothFastForwardRate(
@@ -197,6 +198,7 @@ export default function Dashboard() {
   const [showSetupDialog, setShowSetupDialog] = useState(false);
   const [needsInitialSetup, setNeedsInitialSetup] = useState(false);
   const [isChatFullscreen, setIsChatFullscreen] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
   const clockTickBusy = useRef(false);
   const visualExtraMsRef = useRef(0);
   const scheduleStateRef = useRef<ScheduleWorkspaceState | null>(null);
@@ -431,6 +433,32 @@ export default function Dashboard() {
     } catch (error) {
       setActionError(errorMessage(error));
     }
+  }
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+      if (saved === "dark") {
+        setDarkMode(true);
+        document.documentElement.dataset.theme = "dark";
+      }
+    } catch {
+      /* Ignore storage access issues */
+    }
+  }, []);
+
+  function toggleTheme() {
+    setDarkMode((prev) => {
+      const next = !prev;
+      const mode = next ? "dark" : "light";
+      document.documentElement.dataset.theme = mode;
+      try {
+        window.localStorage.setItem(THEME_STORAGE_KEY, mode);
+      } catch {
+        /* Ignore storage errors */
+      }
+      return next;
+    });
   }
 
   useEffect(() => {
@@ -901,7 +929,19 @@ export default function Dashboard() {
           </nav>
           <div className="mode-controls">
             <span className={`demo-label ${!workspace || workspaceError ? "disconnected" : ""}`} role="status"><span /> {preview ? "Browser preview" : workspaceError ? workspace ? "Connection lost" : "Service disconnected" : workspace ? liveSupplier ? "Junction mock connection" : "Demo workspace" : "Connecting…"}</span>
-            <button className="secondary-button" type="button" disabled={Boolean(activeAction) || sending} onClick={() => switchMode(!preview)}>{preview ? "Use service connection" : "Start browser preview"}</button>
+            <div className="mode-controls-buttons">
+              <button
+                className="secondary-button theme-toggle-btn"
+                type="button"
+                aria-pressed={darkMode}
+                title={darkMode ? "Switch to light theme" : "Switch to dark theme"}
+                onClick={toggleTheme}
+              >
+                {darkMode ? <Sun size={13} /> : <Moon size={13} />}
+                <span>{darkMode ? "Light" : "Dark"}</span>
+              </button>
+              <button className="secondary-button" type="button" disabled={Boolean(activeAction) || sending} onClick={() => switchMode(!preview)}>{preview ? "Use service connection" : "Start browser preview"}</button>
+            </div>
           </div>
         </div>
         <svg className="header-wave" viewBox="0 0 1440 80" preserveAspectRatio="none" aria-hidden="true" focusable="false">
@@ -976,35 +1016,95 @@ export default function Dashboard() {
             </div>
 
             {workspace && (
-              <div className="kitchen-setup-bar">
-                <div className="kitchen-setup-summary">
-                  <span className={`setup-summary-pill ${workspace.guardrails.review_allergens.length > 0 ? "is-warn" : ""}`}>
-                    <ShieldCheck size={12} />
-                    {workspace.guardrails.review_allergens.length > 0
-                      ? `Excluded: ${workspace.guardrails.review_allergens.join(", ")}`
-                      : "No allergens excluded"}
-                  </span>
-                  <span className="setup-summary-pill">
-                    <Award size={12} />
-                    Priority: {activePriorityList(workspace.guardrails).map((m) => priorityOptions.find((o) => o.id === m)?.shortLabel ?? m).join(" + ")}
-                  </span>
-                  {(scheduleState?.rules.filter((r) => r.enabled).length ?? 0) > 0 && (
-                    <span className="setup-summary-pill is-accent">
-                      <CalendarClock size={12} />
-                      {scheduleState?.rules.filter((r) => r.enabled).length} scheduled
+              <div className="kitchen-setup-wrap">
+                <div className="kitchen-setup-bar">
+                  <div className="kitchen-setup-summary">
+                    <span className={`setup-summary-pill ${workspace.guardrails.review_allergens.length > 0 ? "is-warn" : ""}`}>
+                      <ShieldCheck size={12} />
+                      {workspace.guardrails.review_allergens.length > 0
+                        ? `Excluded: ${workspace.guardrails.review_allergens.join(", ")}`
+                        : "No allergens excluded"}
                     </span>
+                    <span className="setup-summary-pill">
+                      <Award size={12} />
+                      Priority: {activePriorityList(workspace.guardrails).map((m) => priorityOptions.find((o) => o.id === m)?.shortLabel ?? m).join(" + ")}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className={`kitchen-setup-toggle ${showSetupDialog ? "is-open" : ""}`}
+                    aria-expanded={showSetupDialog}
+                    onClick={() => setShowSetupDialog((v) => !v)}
+                  >
+                    <SlidersHorizontal size={13} />
+                    <span>Keittiö Setup</span>
+                    <ChevronDown size={14} className="setup-chevron" />
+                  </button>
+                </div>
+
+                <div className="kitchen-schedule-strip" role="region" aria-label="Recurring and timed auto-buys">
+                  <div className="kitchen-schedule-strip-head">
+                    <span className="kitchen-schedule-title">
+                      <CalendarClock size={13} /> Recurring &amp; timed auto-buys
+                      {(scheduleState?.rules.filter((r) => r.enabled).length ?? 0) > 0 && (
+                        <span className="setup-summary-pill is-accent">{scheduleState?.rules.filter((r) => r.enabled).length} active</span>
+                      )}
+                    </span>
+                    <button type="button" className="text-button quick-setup-btn" onClick={() => setShowScheduleForm((v) => !v)}>
+                      <Plus size={13} /> {showScheduleForm ? "Close form" : "Schedule auto-buy"}
+                    </button>
+                  </div>
+                  {showScheduleForm && (
+                    <form className="schedule-inline-form" onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!schedPrompt.trim()) return;
+                      void createScheduleRule(schedPrompt.trim(), schedCadence, schedTime).then(() => setShowScheduleForm(false));
+                    }}>
+                      <input
+                        type="text"
+                        value={schedPrompt}
+                        maxLength={200}
+                        placeholder="e.g. 20 L lactose-free milk"
+                        onChange={(e) => setSchedPrompt(e.target.value)}
+                      />
+                      <select value={schedCadence} onChange={(e) => setSchedCadence(e.target.value as ScheduledOrderCadence)}>
+                        <option value="daily">Every day</option>
+                        <option value="weekdays">Weekdays</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="once">Once (next)</option>
+                      </select>
+                      <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)} />
+                      <button type="submit" className="secondary-button">Add</button>
+                    </form>
+                  )}
+                  {scheduleState && scheduleState.rules.length > 0 ? (
+                    <div className="schedule-pills-list">
+                      {scheduleState.rules.map((rule) => (
+                        <div key={rule.id} className={`schedule-rule-pill ${rule.enabled ? "" : "is-paused"}`}>
+                          <div>
+                            <strong>{rule.prompt}</strong>
+                            <small>
+                              <code>{rule.id}</code> · {rule.cadence} @ {rule.run_time} · Next: {dates.format(new Date(rule.next_run_at))}
+                              {rule.runs_completed > 0 ? ` · Ran ${rule.runs_completed}×` : ""}
+                            </small>
+                          </div>
+                          <div className="schedule-rule-actions">
+                            <button type="button" title={rule.enabled ? "Pause" : "Resume"} onClick={() => void toggleScheduleRule(rule.id, !rule.enabled)}>
+                              {rule.enabled ? <Pause size={12} /> : <Play size={12} />}
+                            </button>
+                            <button type="button" title="Delete schedule" onClick={() => void deleteScheduleRule(rule.id)}>
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="allergen-quickbar-note">
+                      Tip: Click <strong>Schedule auto-buy</strong> or type <code>Every day at 07:00 buy 20 L lactose-free milk</code>, then speed up the clock below Recent orders to watch it buy live.
+                    </p>
                   )}
                 </div>
-                <button
-                  type="button"
-                  className={`kitchen-setup-toggle ${showSetupDialog ? "is-open" : ""}`}
-                  aria-expanded={showSetupDialog}
-                  onClick={() => setShowSetupDialog((v) => !v)}
-                >
-                  <SlidersHorizontal size={13} />
-                  <span>Keittiö Setup</span>
-                  <ChevronDown size={14} className="setup-chevron" />
-                </button>
               </div>
             )}
 
@@ -1373,7 +1473,7 @@ export default function Dashboard() {
             <div className="onboarding-head">
               <span className="section-icon"><SlidersHorizontal size={20} /></span>
               <div>
-                <h2 id="setup-dialog-title">Keittiö Setup — Allergens, Priorities &amp; Schedules</h2>
+                <h2 id="setup-dialog-title">Keittiö Setup — Allergens &amp; Priorities</h2>
                 <p>Remembered automatically across your workspace. Category lock + excluded allergens always run first.</p>
               </div>
             </div>
@@ -1419,65 +1519,6 @@ export default function Dashboard() {
                   );
                 })}
               </div>
-            </div>
-
-            <div className="onboarding-block">
-              <div className="allergen-quickbar-head">
-                <strong>3. Recurring &amp; timed auto-buys</strong>
-                <button type="button" className="text-button quick-setup-btn" onClick={() => setShowScheduleForm((v) => !v)}>
-                  <Plus size={13} /> {showScheduleForm ? "Close form" : "Schedule auto-buy"}
-                </button>
-              </div>
-              {showScheduleForm && (
-                <form className="schedule-inline-form" onSubmit={(e) => {
-                  e.preventDefault();
-                  if (!schedPrompt.trim()) return;
-                  void createScheduleRule(schedPrompt.trim(), schedCadence, schedTime).then(() => setShowScheduleForm(false));
-                }}>
-                  <input
-                    type="text"
-                    value={schedPrompt}
-                    maxLength={200}
-                    placeholder="e.g. 20 L lactose-free milk"
-                    onChange={(e) => setSchedPrompt(e.target.value)}
-                  />
-                  <select value={schedCadence} onChange={(e) => setSchedCadence(e.target.value as ScheduledOrderCadence)}>
-                    <option value="daily">Every day</option>
-                    <option value="weekdays">Weekdays</option>
-                    <option value="weekly">Weekly</option>
-                    <option value="once">Once (next)</option>
-                  </select>
-                  <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)} />
-                  <button type="submit" className="secondary-button">Add</button>
-                </form>
-              )}
-              {scheduleState && scheduleState.rules.length > 0 ? (
-                <div className="schedule-pills-list">
-                  {scheduleState.rules.map((rule) => (
-                    <div key={rule.id} className={`schedule-rule-pill ${rule.enabled ? "" : "is-paused"}`}>
-                      <div>
-                        <strong>{rule.prompt}</strong>
-                        <small>
-                          <code>{rule.id}</code> · {rule.cadence} @ {rule.run_time} · Next: {dates.format(new Date(rule.next_run_at))}
-                          {rule.runs_completed > 0 ? ` · Ran ${rule.runs_completed}×` : ""}
-                        </small>
-                      </div>
-                      <div className="schedule-rule-actions">
-                        <button type="button" title={rule.enabled ? "Pause" : "Resume"} onClick={() => void toggleScheduleRule(rule.id, !rule.enabled)}>
-                          {rule.enabled ? <Pause size={12} /> : <Play size={12} />}
-                        </button>
-                        <button type="button" title="Delete schedule" onClick={() => void deleteScheduleRule(rule.id)}>
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="allergen-quickbar-note">
-                  Tip: Click <strong>Schedule auto-buy</strong> or type <code>Every day at 07:00 buy 20 L lactose-free milk</code>, then speed up the clock below Recent orders to watch it buy live.
-                </p>
-              )}
             </div>
 
             <div className="onboarding-actions">
