@@ -306,9 +306,34 @@ PLURAL_STEM_MAP: dict[str, str] = {
 }
 
 
+def _normalize_word_hyphens(text: str) -> str:
+    # Word separators are interchangeable; preserve numeric SKU/date separators.
+    return re.sub(r"(?<=[^\W\d_])[-\u2010-\u2015](?=[^\W\d_])", " ", text)
+
+
+def _normalize_quantity_numbers(text: str) -> str:
+    """Resolve commas inside numbers before commas are used to separate order lines."""
+    def normalize(match: re.Match) -> str:
+        number = match.group(0)
+        if "," not in number:
+            return number
+        if re.fullmatch(r"[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?", number):
+            return number.replace(",", "")  # 4,000 / 4,000.5
+        if re.fullmatch(r"[1-9]\d{0,2}(?:\.\d{3})+,\d+", number):
+            return number.replace(".", "").replace(",", ".")  # 4.000,5
+        if re.fullmatch(r"\d+,\d+", number):
+            return number.replace(",", ".")  # 4,5 / 0,125
+        raise ProcurementError(
+            f"Could not read quantity '{number}'. Use 4000 or 4,000 for four thousand, "
+            "and 4.5 for a decimal quantity.", 400,
+        )
+
+    return re.sub(r"(?<![\w.,])\d+(?:[.,]\d+)+(?![\w.,])", normalize, text)
+
+
 def _normalize_query_terms(cleaned_query: str) -> list[str]:
     """Normalize culinary phrases (e.g. 'bell pepper' -> 'paprika') and stem English plurals ('tomatoes' -> 'tomato')."""
-    text = cleaned_query
+    text = _normalize_word_hyphens(cleaned_query)
     for pattern, replacement in CULINARY_PHRASE_SYNONYMS:
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     raw_tokens = [t for t in re.split(r"\s+", text.strip()) if t]
@@ -1751,7 +1776,7 @@ class ValioClient:
     def search_products(self, query: str, priority_mode: PriorityMode | None = None) -> list[Product]:
         self._check_agent_permission("kitchen", "search", "Searched catalog")
         active_priority = self._resolve_priority_mode(priority_mode, query)
-        cleaned = query.casefold().strip()
+        cleaned = _normalize_word_hyphens(_normalize_quantity_numbers(query.casefold())).strip()
         required_claims: list[str] = []
         if "lactose-free" in cleaned or "lactose free" in cleaned or "laktoositon" in cleaned:
             required_claims.append("lactose_free")
@@ -1793,7 +1818,7 @@ class ValioClient:
                         # Only filter out guardrail allergens if the user didn't explicitly ask for that allergen
                         if not any(a in cleaned for a in restricted_allergens):
                             continue
-                    searchable = f"{product.product_id} {product.name} {product.name_fi or ''} {product.category} {product.vendor or ''}".casefold()
+                    searchable = _normalize_word_hyphens(f"{product.product_id} {product.name} {product.name_fi or ''} {product.category} {product.vendor or ''}".casefold())
                     searchable_for_terms = re.sub(r"\bmilk[-\s]free\b", "dairy_excluded", searchable) if "milk" in terms else searchable
                     if all(term in searchable_for_terms for term in terms):
                         found.append(product)
@@ -1858,7 +1883,7 @@ class ValioClient:
             product.model_copy(update={"stock": stock[product.product_id]})
             for product in CATALOG.values()
             if (not required_claims or all(c in (product.dietary_claims or []) for c in required_claims))
-            and all(term in f"{product.product_id} {product.name} {product.category}".casefold() for term in terms)
+            and all(term in _normalize_word_hyphens(f"{product.product_id} {product.name} {product.category}".casefold()) for term in terms)
         ]
         self._record_event("kitchen", "Searched catalog", "completed", f"Query '{query}' · {len(demo_matches)} matches")
         return demo_matches
@@ -2036,12 +2061,22 @@ class ValioClient:
         active_priority = self._resolve_priority_mode(priority_mode, query)
         delivery_date = requested_date or DEFAULT_MOCK_DELIVERY_DATE
         excluded = set(exclude_allergens or [])
+        matches = self.search_products(query, priority_mode=active_priority)
+        if not matches:
+            raise ProcurementError(
+                f"No catalog products matched '{query}'. Try a different product name "
+                "or check the requested dietary requirements.", 404,
+            )
         candidates = [
-            p for p in self.search_products(query, priority_mode=active_priority)
+            p for p in matches
             if not excluded or excluded.isdisjoint(p.allergens or [])
         ]
         if not candidates:
-            raise ProcurementError(f"No products matched '{query}' within your allergen rules.", 404)
+            blocked_allergens = sorted(excluded.intersection(a for p in matches for a in (p.allergens or [])))
+            raise ProcurementError(
+                f"Products matched '{query}', but all were excluded by your allergen rules "
+                f"({', '.join(blocked_allergens)}). No order was placed.", 404,
+            )
 
         top_candidates = candidates[:12]
         if self.supplier and any(c.product_id not in CATALOG for c in top_candidates):
@@ -2576,6 +2611,7 @@ class ValioClient:
         prompt: str, default_excluded: list[Allergen]
     ) -> list[ParsedTradeLine]:
         """Deterministic multi-item parser fallback for natural-language chef requests."""
+        prompt = _normalize_quantity_numbers(prompt)
         cleaned_prompt = re.sub(
             r"\b(?:for|by)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|\d{4}-\d{2}-\d{2})\b",
             " ",
@@ -2591,6 +2627,13 @@ class ValioClient:
         # Extract global allergen exclusions from prompt
         low_prompt = prompt.casefold()
         prompt_allergens = list(default_excluded)
+        for clause in re.finditer(
+            r"\b(?:no|without)\s+(?:gluten|nuts|milk|soy|eggs|fish)(?:\s+(?:or|and)\s+(?:gluten|nuts|milk|soy|eggs|fish))*\b",
+            low_prompt,
+        ):
+            for allergen in re.findall(r"\b(?:gluten|nuts|milk|soy|eggs|fish)\b", clause.group()):
+                if allergen not in prompt_allergens:
+                    prompt_allergens.append(allergen)  # type: ignore[arg-type]
         for alg in ("gluten", "nuts", "milk", "soy", "eggs", "fish"):
             if (
                 f"no {alg}" in low_prompt
@@ -2653,7 +2696,7 @@ class ValioClient:
             item_query = seg
             if not re.search(r"\b(?:packs?|units?|boxes|cases|sacks?|rolls?)\b", seg, re.IGNORECASE):
                 item_query = re.sub(
-                    r"\b\d+(?:[.,]\d+)?\s*(?:tons?|tonnes?|t|litres?|liters?|l|kilograms?|kilos?|kg|grams?|g|ml|dl)?\s*(?:of\s+)?",
+                    r"\b\d+(?:[.,]\d+)?\s*(?:(?:tons?|tonnes?|t|litres?|liters?|l|kilograms?|kilos?|kg|grams?|g|ml|dl)\b)?\s*(?:of\s+)?",
                     " ",
                     seg,
                     flags=re.IGNORECASE,
@@ -2681,6 +2724,7 @@ class ValioClient:
         self, prompt: str, default_excluded: list[Allergen]
     ) -> tuple[list[ParsedTradeLine], str]:
         """Use Gemma 4 26B (models/gemma-4-26b-a4b-it, 14.4K RPD open-weights) to parse a chef's natural language request into structured trade lines."""
+        prompt = _normalize_quantity_numbers(prompt)
         fallback_lines = self._parse_trade_lines_fallback(prompt, default_excluded)
         gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not gemini_key or (self.supplier and self.supplier.transport is not None):

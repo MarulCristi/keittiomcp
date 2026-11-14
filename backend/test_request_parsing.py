@@ -1,0 +1,121 @@
+"""Regression checks use temporary databases and synthetic catalog entries, never live orders."""
+
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from valio_client import (
+    CATALOG, Product, ProcurementError, ValioClient,
+    _normalize_quantity_numbers, _normalize_query_terms,
+)
+
+
+class QuantityParsingTests(unittest.TestCase):
+    def test_screenshot_request_is_one_line_of_four_thousand_litres(self):
+        lines = ValioClient._parse_trade_lines_fallback("order 4,000 l skimmed-milk for tomorrow", ["nuts"])
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].target_volume_liters_or_kg, 4000)
+        self.assertEqual(lines[0].query, "skimmed-milk")
+        self.assertEqual(lines[0].unit_hint, "L")
+        self.assertEqual(lines[0].exclude_allergens, ["nuts"])
+
+    def test_grouping_decimal_commas_and_item_separators(self):
+        cases = [
+            ("4,000 L milk, 1,5 kg tomatoes", [4000, 1.5], ["milk", "tomatoes"]),
+            ("4,000.5 L milk and 2 kg tomatoes", [4000.5, 2], ["milk", "tomatoes"]),
+            ("4.000,5 L milk; 2 kg tomatoes", [4000.5, 2], ["milk", "tomatoes"]),
+            ("1,000 kg flour,2 L milk", [1000, 2], ["flour", "milk"]),
+            ("4 L milk, 5 kg flour", [4, 5], ["milk", "flour"]),
+            ("1,5 tonnes tomatoes", [1500], ["tomatoes"]),
+        ]
+        for prompt, quantities, names in cases:
+            with self.subTest(prompt=prompt):
+                lines = ValioClient._parse_trade_lines_fallback(prompt, [])
+                self.assertEqual([line.target_volume_liters_or_kg for line in lines], quantities)
+                self.assertEqual([line.query for line in lines], names)
+
+    def test_dietary_exclusions_survive_number_normalization(self):
+        lines = ValioClient._parse_trade_lines_fallback("4,000 L lactose-free milk, no nuts or gluten", [])
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(set(lines[0].exclude_allergens), {"nuts", "gluten"})
+        self.assertNotIn("milk", lines[0].exclude_allergens)
+        self.assertEqual(lines[0].query, "lactose-free milk")
+
+    def test_normalizes_numbers_without_changing_dates_or_skus(self):
+        self.assertEqual(_normalize_quantity_numbers("0,125 kg / 1,000,000 g / AIMO-101 / 2026-11-16"),
+                         "0.125 kg / 1000000 g / AIMO-101 / 2026-11-16")
+
+    def test_malformed_grouping_reports_quantity_error(self):
+        with self.assertRaises(ProcurementError) as caught:
+            ValioClient._parse_trade_lines_fallback("4,00,0 L milk", [])
+        self.assertEqual(caught.exception.status, 400)
+        self.assertIn("Could not read quantity", str(caught.exception))
+
+    def test_ai_receives_the_same_normalized_quantity(self):
+        client = ValioClient(Path("unused.sqlite3"))
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-only"}), \
+                patch("valio_client.httpx.post", return_value=SimpleNamespace(is_success=False)) as post:
+            lines, _ = client._parse_trade_request_with_gemini("order 4,000 L skimmed-milk", [])
+        prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("Chef Request: order 4000 L skimmed-milk", prompt)
+        self.assertEqual(lines[0].target_volume_liters_or_kg, 4000)
+
+
+class CatalogAndErrorTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.client = ValioClient(Path(self.directory.name) / "test.sqlite3")
+        self.client.initialize()
+
+    def test_hyphenated_names_and_unicode_hyphens_match_without_changing_skus(self):
+        product = Product(product_id="TEST-101", name="Skimmed milk", category="123", unit="1 L",
+                          unit_price_cents=100, allergens=["milk"], dietary_claims=["lactose_free"])
+        self.client.supplier = SimpleNamespace(transport=object(), catalog=lambda: (product,))
+        for query in ["skimmed milk", "skimmed-milk", "skimmed\u2011milk", "lactose\u2011free skimmed-milk", "TEST-101"]:
+            with self.subTest(query=query):
+                self.assertEqual([p.product_id for p in self.client.search_products(query)], ["TEST-101"])
+        self.assertEqual(_normalize_query_terms("AIMO-101"), ["AIMO-101"])
+
+    def test_hyphenated_culinary_phrases_use_existing_synonyms(self):
+        self.assertEqual(_normalize_query_terms("bell-peppers"), ["paprika"])
+
+    def test_dietary_constraints_are_not_relaxed_by_hyphen_normalization(self):
+        product = Product(product_id="TEST-101", name="Skimmed milk", category="123", unit="1 L", allergens=["milk"])
+        self.client.supplier = SimpleNamespace(transport=object(), catalog=lambda: (product,))
+        self.assertEqual(self.client.search_products("lactose\u2011free skimmed-milk"), [])
+
+    def test_no_catalog_match_does_not_blame_allergens(self):
+        with patch.object(self.client, "search_products", return_value=[]):
+            with self.assertRaises(ProcurementError) as caught:
+                self.client.plan_procurement("unknown-product", exclude_allergens=["nuts"])
+        self.assertIn("No catalog products matched", str(caught.exception))
+        self.assertNotIn("allergen rules", str(caught.exception))
+        self.assertEqual(caught.exception.status, 404)
+
+    def test_real_allergen_exclusion_names_the_blocking_rule(self):
+        with patch.object(self.client, "search_products", return_value=[CATALOG["AIMO-101"]]):
+            with self.assertRaises(ProcurementError) as caught:
+                self.client.plan_procurement("milk", exclude_allergens=["milk", "nuts"])
+        self.assertIn("all were excluded by your allergen rules (milk)", str(caught.exception))
+        self.assertEqual(caught.exception.status, 404)
+
+    def test_supplier_failure_is_not_relabelled_as_no_match(self):
+        with patch.object(self.client, "search_products", side_effect=ProcurementError("Supplier lookup unavailable", 503)):
+            with self.assertRaises(ProcurementError) as caught:
+                self.client.plan_procurement("milk", exclude_allergens=["nuts"])
+        self.assertEqual(str(caught.exception), "Supplier lookup unavailable")
+        self.assertEqual(caught.exception.status, 503)
+
+    def test_normal_quantity_and_pack_math_still_work(self):
+        product = CATALOG["AIMO-101"].model_copy(update={"net_volume_liters_or_kg": 1.0, "stock": 5000})
+        with patch.object(self.client, "search_products", return_value=[product]):
+            plan = self.client.plan_procurement("milk", target_volume_liters_or_kg=4000, exclude_allergens=["nuts"])
+        self.assertEqual(plan.options[0].recommended_packs, 4000)
+        self.assertTrue(plan.options[0].can_fulfill_full_volume)
+
+
+if __name__ == "__main__":
+    unittest.main()
