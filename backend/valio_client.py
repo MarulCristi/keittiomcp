@@ -11,7 +11,7 @@ import sqlite3
 import time
 from collections import Counter
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from threading import Lock
@@ -30,6 +30,7 @@ Allergen = Literal["milk", "gluten", "soy", "eggs", "nuts", "fish"]
 SubstituteTier = Literal["best", "better", "good"]
 AgentPermission = Literal["search", "prepare", "purchase"]
 PriorityMode = Literal["balanced", "low_carbon", "lowest_price", "authentic_finnish", "highest_reliability"]
+ScheduledOrderCadence = Literal["once", "daily", "weekdays", "weekly"]
 
 PRIORITY_MODE_LABELS: dict[PriorityMode, str] = {
     "balanced": "Balanced (Best Overall: Reliability, Carbon & Price)",
@@ -578,6 +579,7 @@ class Guardrails(BaseModel):
     min_delivery_reliability: Annotated[float, Field(ge=0.0, le=1.0)] = 0.90
     require_approval_on_substitution: bool = True
     priority_mode: PriorityMode = "balanced"
+    priority_modes: list[PriorityMode] = Field(default_factory=list, max_length=5)
 
 
 class Availability(BaseModel):
@@ -624,6 +626,7 @@ class ProcurementPlan(BaseModel):
     target_volume_liters_or_kg: float
     requested_date: date
     priority_mode: PriorityMode = "balanced"
+    priority_modes: list[PriorityMode] = Field(default_factory=list)
     options: list[FulfillmentOption]
     recommended_combined_lines: list[OrderLine] = Field(default_factory=list)
     summary: str
@@ -640,6 +643,7 @@ class AgentExecutionRequest(BaseModel):
     prompt: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=1000)]
     agent_id: str = "kitchen"
     priority_mode: PriorityMode | None = None
+    priority_modes: list[PriorityMode] | None = None
     requested_date: date | None = None
     exclude_allergens: list[Allergen] | None = None
     auto_place_order: bool = True
@@ -650,6 +654,7 @@ class AgentExecutionResult(BaseModel):
     prompt: str
     agent: AgentProfile
     priority_mode: PriorityMode = "balanced"
+    priority_modes: list[PriorityMode] = Field(default_factory=list)
     requested_date: date
     orchestrator_model: str
     parsed_lines: list[ParsedTradeLine]
@@ -661,6 +666,58 @@ class AgentExecutionResult(BaseModel):
     rejection_reason: str | None = None
     rejected_products: list[Product] = Field(default_factory=list)
     summary: str
+
+
+class ScheduledOrderRule(BaseModel):
+    id: str
+    prompt: str
+    cadence: ScheduledOrderCadence = "daily"
+    run_time: str = "07:00"
+    next_run_at: datetime
+    last_run_at: datetime | None = None
+    last_order_id: str | None = None
+    last_status: str | None = None
+    last_summary: str | None = None
+    enabled: bool = True
+    auto_place_order: bool = True
+    runs_completed: int = 0
+    created_at: datetime
+
+
+class CreateScheduleRequest(BaseModel):
+    prompt: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=1000)]
+    cadence: ScheduledOrderCadence | None = None
+    run_time: str | None = None
+    start_date: date | None = None
+
+
+class ScheduleUpdate(BaseModel):
+    enabled: bool
+
+
+class ScheduledRunExecution(BaseModel):
+    rule: ScheduledOrderRule
+    scheduled_for: datetime
+    execution: AgentExecutionResult
+
+
+class ClockAdvanceRequest(BaseModel):
+    days: Annotated[int, Field(ge=0, le=30)] = 0
+    hours: Annotated[int, Field(ge=0, le=240)] = 0
+    minutes: Annotated[int, Field(ge=0, le=1440)] = 0
+    jump_to_next_schedule: bool = False
+    reset: bool = False
+
+
+class ScheduleWorkspaceState(BaseModel):
+    simulated_now: datetime
+    real_now: datetime
+    offset_seconds: int = 0
+    rules: list[ScheduledOrderRule]
+
+
+class ClockAdvanceResponse(ScheduleWorkspaceState):
+    executed_runs: list[ScheduledRunExecution] = Field(default_factory=list)
 
 
 class Workspace(BaseModel):
@@ -1467,10 +1524,14 @@ def _rank_substitutes_good_better_best(
     candidates: list[Product],
     *,
     priority_mode: PriorityMode = "balanced",
+    priority_modes: list[PriorityMode] | None = None,
 ) -> list[Product]:
-    """Assign Good / Better / Best tiers based on the kitchen's active priority_mode (Balanced, Low Carbon, Lowest Price, Authentic Finnish, or Highest Reliability)."""
+    """Assign Good / Better / Best tiers with a uniform stock/purity/dietary base across all priority modes."""
     if not candidates:
         return []
+
+    active_modes: list[PriorityMode] = list(dict.fromkeys(priority_modes or [priority_mode])) or ["balanced"]
+    primary_mode = active_modes[0]
 
     stop_words = {"valio", "aimo", "arla", "atria", "saarioinen", "forssan", "fazer", "kg", "g", "l", "dl", "ml", "st", "ki", "ras", "uht", "lactose", "free", "laktoositon"}
     orig_tokens = {
@@ -1481,6 +1542,16 @@ def _rank_substitutes_good_better_best(
     orig_text = f"{original.name} {original.name_fi or ''}".casefold()
     orig_terms = _normalize_query_terms(orig_text)
 
+    co2_values = [c.carbon_footprint_kg for c in candidates if c.carbon_footprint_kg is not None]
+    min_co2 = min(co2_values) if co2_values else 0.0
+    max_co2 = max(co2_values) if co2_values else 1.0
+    co2_span = max(max_co2 - min_co2, 0.01)
+
+    price_values = [c.comparison_price_cents or c.unit_price_cents for c in candidates if (c.comparison_price_cents or c.unit_price_cents)]
+    min_price = min(price_values) if price_values else 0
+    max_price = max(price_values) if price_values else 1
+    price_span = max(max_price - min_price, 1)
+
     def score_best(p: Product) -> tuple:
         in_stock = 1 if (p.stock is None or p.stock > 0) else 0
         cand_text = f"{p.name} {p.name_fi or ''}".casefold()
@@ -1488,23 +1559,49 @@ def _rank_substitutes_good_better_best(
         purity_inv = -p.purity_tier
         var_pen_inv = -_compute_variety_penalty(p, orig_terms, orig_text)
         same_claims = len(set(original.dietary_claims or []) & set(p.dietary_claims or []))
+
+        # Identical foundational criteria for EVERY priority mode:
+        # In stock -> Name match -> Ingredient/variety match -> Purity tier -> Token overlap -> Dietary claims
+        base = (in_stock, name_sim > 0, var_pen_inv, purity_inv, name_sim, same_claims)
+
         rel = p.delivery_reliability if p.delivery_reliability is not None else 0.85
         has_co2 = 1 if p.carbon_footprint_kg is not None else 0
         co2_inv = -(p.carbon_footprint_kg if p.carbon_footprint_kg is not None else 50.0)
         is_fi = 1 if _is_finnish_product(p) else 0
         labels_cnt = len(p.sustainability_labels or [])
-        has_price = 1 if (p.comparison_price_cents or p.unit_price_cents) else 0
-        price_inv = -(p.comparison_price_cents or p.unit_price_cents or 999999)
+        raw_price = p.comparison_price_cents or p.unit_price_cents
+        has_price = 1 if raw_price else 0
+        price_inv = -(raw_price or 999999)
 
-        if priority_mode == "lowest_price":
-            return (in_stock, name_sim > 0, has_price, price_inv, var_pen_inv, purity_inv, round(rel, 3), round(co2_inv, 2))
-        if priority_mode == "low_carbon":
-            return (in_stock, name_sim > 0, has_co2, round(co2_inv, 2), labels_cnt, var_pen_inv, purity_inv, round(rel, 3), price_inv)
-        if priority_mode == "authentic_finnish":
-            return (in_stock, is_fi, name_sim > 0, var_pen_inv, purity_inv, labels_cnt, round(rel, 3), round(co2_inv, 2), price_inv)
-        if priority_mode == "highest_reliability":
-            return (in_stock, round(rel, 4), name_sim > 0, var_pen_inv, purity_inv, round(co2_inv, 2), price_inv)
-        return (in_stock, name_sim > 0, var_pen_inv, purity_inv, name_sim, same_claims, round(rel, 3), round(co2_inv, 2), labels_cnt, price_inv)
+        if len(active_modes) == 1:
+            mode = active_modes[0]
+            if mode == "lowest_price":
+                return base + (has_price, price_inv, round(rel, 3), round(co2_inv, 2), labels_cnt)
+            if mode == "low_carbon":
+                return base + (has_co2, round(co2_inv, 2), labels_cnt, round(rel, 3), price_inv)
+            if mode == "authentic_finnish":
+                return base + (is_fi, labels_cnt, round(rel, 3), round(co2_inv, 2), price_inv)
+            if mode == "highest_reliability":
+                return base + (round(rel, 4), round(co2_inv, 2), labels_cnt, price_inv)
+            return base + (round(rel, 3), round(co2_inv, 2), labels_cnt, price_inv)
+
+        co2_norm = (max_co2 - p.carbon_footprint_kg) / co2_span if p.carbon_footprint_kg is not None else 0.0
+        price_norm = (max_price - raw_price) / price_span if raw_price else 0.0
+        fi_norm = 1.0 if is_fi else 0.0
+        rel_norm = max(0.0, min(1.0, rel))
+        balanced_norm = 0.40 * rel_norm + 0.35 * co2_norm + 0.25 * price_norm
+
+        mode_scores = {
+            "balanced": balanced_norm,
+            "low_carbon": co2_norm,
+            "lowest_price": price_norm,
+            "authentic_finnish": fi_norm,
+            "highest_reliability": rel_norm,
+        }
+        weighted_sum = sum(mode_scores[m] * (1.0 - 0.05 * idx) for idx, m in enumerate(active_modes))
+        weight_total = sum(1.0 - 0.05 * idx for idx in range(len(active_modes)))
+        combined_score = round(weighted_sum / max(weight_total, 1.0), 4)
+        return base + (combined_score, round(rel, 3), round(co2_inv, 2), labels_cnt, price_inv)
 
     ranked = sorted(candidates, key=score_best, reverse=True)
     result: list[Product] = []
@@ -1522,7 +1619,11 @@ def _rank_substitutes_good_better_best(
         reason_parts: list[str] = []
         if idx == 0:
             tier = "best"
-            reason_parts.append(best_badge_by_mode.get(priority_mode, "BEST OVERALL"))
+            if len(active_modes) > 1:
+                short_names = " + ".join(m.replace("_", " ").title() for m in active_modes)
+                reason_parts.append(f"BEST COMBINED PRIORITY ({short_names})")
+            else:
+                reason_parts.append(best_badge_by_mode.get(primary_mode, "BEST OVERALL"))
         elif idx == 1:
             tier = "better"
             reason_parts.append("BETTER VALUE (Runner-Up Match)")
@@ -1554,6 +1655,74 @@ def _rank_substitutes_good_better_best(
             )
         )
     return result
+
+
+HELSINKI_TZ = ZoneInfo("Europe/Helsinki")
+
+
+def _compute_next_run_at(
+    cadence: ScheduledOrderCadence,
+    run_time: str,
+    after_utc: datetime,
+    *,
+    start_date: date | None = None,
+) -> datetime:
+    """Compute the next scheduled trigger timestamp in UTC based on Helsinki local time."""
+    hour_str, _, min_str = run_time.partition(":")
+    hour = max(0, min(23, int(hour_str or 7)))
+    minute = max(0, min(59, int(min_str or 0)))
+    local_now = after_utc.astimezone(HELSINKI_TZ)
+    candidate_date = start_date or local_now.date()
+    candidate_local = datetime(candidate_date.year, candidate_date.month, candidate_date.day, hour, minute, tzinfo=HELSINKI_TZ)
+    if candidate_local <= local_now:
+        step = 7 if cadence == "weekly" else 1
+        candidate_date = candidate_date + timedelta(days=step)
+        candidate_local = datetime(candidate_date.year, candidate_date.month, candidate_date.day, hour, minute, tzinfo=HELSINKI_TZ)
+    while cadence == "weekdays" and candidate_local.weekday() >= 5:
+        candidate_date = candidate_date + timedelta(days=1)
+        candidate_local = datetime(candidate_date.year, candidate_date.month, candidate_date.day, hour, minute, tzinfo=HELSINKI_TZ)
+    return candidate_local.astimezone(timezone.utc)
+
+
+def _parse_schedule_prompt(raw_prompt: str, now_utc: datetime) -> tuple[str, ScheduledOrderCadence, str, date | None]:
+    """Parse phrases like 'every day at 07:00 buy 20 L milk' into (item_prompt, cadence, HH:MM, optional_start_date)."""
+    text = raw_prompt.strip()
+    low = text.casefold()
+    cadence: ScheduledOrderCadence = "daily"
+    local_today = now_utc.astimezone(HELSINKI_TZ).date()
+    start_date: date | None = None
+
+    if re.search(r"\b(?:every\s+weekday|weekdays)\b", low):
+        cadence = "weekdays"
+    elif re.search(r"\b(?:every\s+week|weekly)\b", low):
+        cadence = "weekly"
+    elif re.search(r"\b(?:every\s+day|daily|every\s+morning|each\s+day)\b", low):
+        cadence = "daily"
+    elif re.search(r"\b(?:tomorrow|today|next\s+\w+|at\s+\d{1,2}[:.]\d{2})\b", low):
+        cadence = "once"
+
+    if "tomorrow" in low:
+        start_date = local_today + timedelta(days=1)
+
+    run_time = "07:00"
+    time_match = re.search(r"\b(?:at\s+)?(\d{1,2})[:.](\d{2})\b", text, re.IGNORECASE)
+    if time_match:
+        h = max(0, min(23, int(time_match.group(1))))
+        m = max(0, min(59, int(time_match.group(2))))
+        run_time = f"{h:02d}:{m:02d}"
+
+    cleaned = re.sub(
+        r"\b(?:schedule|auto[-\s]?buy|every\s+weekday|weekdays|every\s+week|weekly|every\s+day|daily|every\s+morning|each\s+day|tomorrow|today)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\b(?:at\s+)?\d{1,2}[:.]\d{2}\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^\s*(?:to\s+)?(?:buy|order|purchase|get)\b\s*", "", cleaned.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.-")
+    if len(cleaned) < 2:
+        cleaned = text
+    return cleaned, cadence, run_time, start_date
 
 
 class ValioClient:
@@ -1647,6 +1816,27 @@ class ValioClient:
     def _ensure_agent_tables(self, db):
         db.execute("CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, sort_order INTEGER NOT NULL, payload TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS schedules (id TEXT PRIMARY KEY, created_seq INTEGER NOT NULL, payload TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS sim_clock (id INTEGER PRIMARY KEY, offset_seconds INTEGER NOT NULL DEFAULT 0)")
+        db.execute("INSERT OR IGNORE INTO sim_clock (id, offset_seconds) VALUES (1, 0)")
+
+    def _clock_offset_seconds(self) -> int:
+        try:
+            with self.transaction(write=True) as db:
+                self._ensure_agent_tables(db)
+                row = db.execute("SELECT offset_seconds FROM sim_clock WHERE id = 1").fetchone()
+                return int(row[0]) if row else 0
+        except Exception:
+            return 0
+
+    def _now_utc(self) -> datetime:
+        return datetime.now(timezone.utc) + timedelta(seconds=self._clock_offset_seconds())
+
+    def _default_delivery_date(self) -> date:
+        offset = self._clock_offset_seconds()
+        if offset == 0:
+            return DEFAULT_MOCK_DELIVERY_DATE
+        return self._now_utc().astimezone(HELSINKI_TZ).date() + timedelta(days=1)
 
     def list_agents(self) -> list[AgentProfile]:
         with self.transaction(write=True) as db:
@@ -1706,7 +1896,7 @@ class ValioClient:
     ) -> ActivityEvent | None:
         try:
             target_id = (agent_id or "kitchen").strip().lower()
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = self._now_utc().isoformat()
             with self.transaction(write=True) as db:
                 self._ensure_agent_tables(db)
                 row = db.execute("SELECT payload FROM agents WHERE id = ?", (target_id,)).fetchone()
@@ -1824,19 +2014,37 @@ class ValioClient:
             pass
         return []
 
+    def _resolve_priority_modes(
+        self,
+        explicit_priority: PriorityMode | None = None,
+        explicit_priorities: list[PriorityMode] | None = None,
+        text_hint: str = "",
+    ) -> list[PriorityMode]:
+        detected = _detect_priority_from_text(text_hint) if text_hint else None
+        if explicit_priorities:
+            cleaned = list(dict.fromkeys(explicit_priorities))
+            if detected and detected not in cleaned:
+                return [detected, *cleaned]
+            return cleaned
+        if explicit_priority is not None:
+            if detected and detected != explicit_priority:
+                return [detected, explicit_priority]
+            return [explicit_priority]
+        if detected is not None:
+            return [detected]
+        try:
+            with self.transaction() as db:
+                gr = self.guardrails(db)
+                if gr.priority_modes:
+                    return list(dict.fromkeys(gr.priority_modes))
+                return [gr.priority_mode]
+        except Exception:
+            return ["balanced"]
+
     def _resolve_priority_mode(
         self, explicit_priority: PriorityMode | None = None, text_hint: str = ""
     ) -> PriorityMode:
-        if explicit_priority is not None:
-            return explicit_priority
-        detected = _detect_priority_from_text(text_hint) if text_hint else None
-        if detected is not None:
-            return detected
-        try:
-            with self.transaction() as db:
-                return self.guardrails(db).priority_mode
-        except Exception:
-            return "balanced"
+        return self._resolve_priority_modes(explicit_priority=explicit_priority, text_hint=text_hint)[0]
 
     def _effective_excluded_allergens(
         self, extra_allergens: list[Allergen] | set[Allergen] | None = None
@@ -1855,9 +2063,15 @@ class ValioClient:
         query: str,
         priority_mode: PriorityMode | None = None,
         extra_excluded: set[Allergen] | None = None,
+        priority_modes: list[PriorityMode] | None = None,
     ) -> tuple[list[Product], list[Product], list[Allergen]]:
-        """Search catalog strictly ignoring any product with excluded allergens; return (eligible, blocked, blocking_allergens)."""
-        active_priority = self._resolve_priority_mode(priority_mode, query)
+        """Search catalog strictly within resolved category + strictly ignoring excluded allergens; return (eligible, blocked, blocking_allergens)."""
+        active_modes = self._resolve_priority_modes(
+            explicit_priority=priority_mode,
+            explicit_priorities=priority_modes,
+            text_hint=query,
+        )
+        active_priority = active_modes[0]
         cleaned = _normalize_word_hyphens(_normalize_quantity_numbers(query.casefold())).strip()
         required_claims: list[str] = []
         gluten_free_requested = False
@@ -1918,8 +2132,7 @@ class ValioClient:
 
             raw_matches = collect_raw(enforce_categories=True, claims=required_claims)
             # Naturally gluten-free categories (e.g. Cat 10400 dairy milk, produce, meat, fish) rarely carry a marketing
-            # FREE_FROM_GLUTEN sticker; stay inside target_categories and rely on strict gluten allergen exclusion instead
-            # of falling outside the category into gluten-free chocolate pralines.
+            # FREE_FROM_GLUTEN sticker; stay inside target_categories and rely on strict gluten allergen exclusion instead.
             if not raw_matches and gluten_free_requested and target_categories and not (target_categories & gluten_risk_categories):
                 relaxed_claims = [c for c in required_claims if c != "gluten_free"]
                 raw_matches = collect_raw(enforce_categories=True, claims=relaxed_claims)
@@ -1929,31 +2142,16 @@ class ValioClient:
                     terms = _normalize_query_terms(" ".join(ai_terms))
                     target_categories = _resolve_target_categories(terms, " ".join(ai_terms))
                     raw_matches = collect_raw(enforce_categories=True, claims=required_claims)
-            if not raw_matches:
+            # Strict category lock: whenever target_categories exists in this catalog, NEVER cross into another category!
+            catalog_uses_target_cats = bool(
+                target_categories and any(p.category in target_categories for p in catalog)
+            )
+            if not raw_matches and not catalog_uses_target_cats:
                 raw_matches = collect_raw(enforce_categories=False, claims=required_claims)
 
             asked_for_processed = any(
                 w in terms for w in ("burger", "patty", "pihvi", "pie", "piirakka", "soup", "keitto", "ball", "meatball")
             )
-
-            def rank_key(item: Product) -> tuple:
-                exact_id = 0 if item.product_id.casefold() == query.strip().casefold() else 1
-                variety_pen = _compute_variety_penalty(item, terms, query.casefold())
-                purity = 0 if (asked_for_processed or item.category.startswith("174")) else item.purity_tier
-                name_words = set(re.findall(r"[a-zäöå0-9]+", f"{item.name} {item.name_fi or ''}".casefold()))
-                whole_word_match = 0 if all(t in name_words for t in terms) else 1
-                has_rel = 0 if item.delivery_reliability is not None else 1
-                rel = -(item.delivery_reliability if item.delivery_reliability is not None else 0.0)
-                co2 = item.carbon_footprint_kg if item.carbon_footprint_kg is not None else 999.0
-                not_fi = 0 if _is_finnish_product(item) else 1
-                vol_boost = -(item.net_volume_liters_or_kg or 0.0) if "1000" in query else 0.0
-                if active_priority == "authentic_finnish":
-                    return (exact_id, not_fi, variety_pen, purity, whole_word_match, has_rel, rel, co2)
-                if active_priority == "low_carbon":
-                    return (exact_id, variety_pen, purity, whole_word_match, co2, has_rel, rel)
-                if active_priority == "highest_reliability":
-                    return (exact_id, has_rel, rel, variety_pen, purity, whole_word_match, co2)
-                return (exact_id, variety_pen, purity, whole_word_match, vol_boost, has_rel, rel, co2)
 
             eligible = [
                 p for p in raw_matches
@@ -1963,6 +2161,69 @@ class ValioClient:
                 p for p in raw_matches
                 if restricted_allergens and not restricted_allergens.isdisjoint(p.allergens or [])
             ]
+
+            co2_pool = [p.carbon_footprint_kg for p in (eligible or raw_matches) if p.carbon_footprint_kg is not None]
+            min_co2 = min(co2_pool) if co2_pool else 0.0
+            max_co2 = max(co2_pool) if co2_pool else 1.0
+            co2_span = max(max_co2 - min_co2, 0.01)
+
+            price_pool = [p.comparison_price_cents or p.unit_price_cents for p in (eligible or raw_matches) if (p.comparison_price_cents or p.unit_price_cents)]
+            min_price = min(price_pool) if price_pool else 0
+            max_price = max(price_pool) if price_pool else 1
+            price_span = max(max_price - min_price, 1)
+
+            def rank_key(item: Product) -> tuple:
+                exact_id = 0 if item.product_id.casefold() == query.strip().casefold() else 1
+                not_in_stock = 0 if (item.stock is None or item.stock > 0) else 1
+                variety_pen = _compute_variety_penalty(item, terms, query.casefold())
+                purity = 0 if (asked_for_processed or item.category.startswith("174")) else item.purity_tier
+                name_words = set(re.findall(r"[a-zäöå0-9]+", f"{item.name} {item.name_fi or ''}".casefold()))
+                whole_word_match = 0 if all(t in name_words for t in terms) else 1
+                claims_match = sum(1 for c in required_claims if c in (item.dietary_claims or []))
+                vol_boost = -(item.net_volume_liters_or_kg or 0.0) if "1000" in query else 0.0
+
+                # Uniform base criteria across ALL priority modes:
+                # 1. Exact ID -> 2. In stock -> 3. Variety/ingredient match -> 4. Purity -> 5. Whole word -> 6. Dietary claims
+                base = (exact_id, not_in_stock, variety_pen, purity, whole_word_match, -claims_match, vol_boost)
+
+                has_rel = 0 if item.delivery_reliability is not None else 1
+                rel = -(item.delivery_reliability if item.delivery_reliability is not None else 0.0)
+                has_co2 = 0 if item.carbon_footprint_kg is not None else 1
+                co2 = item.carbon_footprint_kg if item.carbon_footprint_kg is not None else 999.0
+                not_fi = 0 if _is_finnish_product(item) else 1
+                raw_price = item.comparison_price_cents or item.unit_price_cents
+                has_price = 0 if raw_price else 1
+                price_cents = raw_price if raw_price else 999999
+                labels_neg = -len(item.sustainability_labels or [])
+
+                if len(active_modes) == 1:
+                    if active_priority == "authentic_finnish":
+                        return base + (not_fi, labels_neg, has_rel, rel, co2, price_cents)
+                    if active_priority == "low_carbon":
+                        return base + (has_co2, co2, labels_neg, has_rel, rel, price_cents)
+                    if active_priority == "lowest_price":
+                        return base + (has_price, price_cents, has_rel, rel, co2)
+                    if active_priority == "highest_reliability":
+                        return base + (has_rel, rel, co2, labels_neg, price_cents)
+                    return base + (has_rel, rel, co2, labels_neg, price_cents)
+
+                co2_norm = (max_co2 - item.carbon_footprint_kg) / co2_span if item.carbon_footprint_kg is not None else 0.0
+                price_norm = (max_price - raw_price) / price_span if raw_price else 0.0
+                fi_norm = 1.0 if not_fi == 0 else 0.0
+                rel_norm = item.delivery_reliability if item.delivery_reliability is not None else 0.85
+                balanced_norm = 0.40 * rel_norm + 0.35 * co2_norm + 0.25 * price_norm
+                mode_scores = {
+                    "balanced": balanced_norm,
+                    "low_carbon": co2_norm,
+                    "lowest_price": price_norm,
+                    "authentic_finnish": fi_norm,
+                    "highest_reliability": rel_norm,
+                }
+                weighted = sum(mode_scores[m] * (1.0 - 0.05 * idx) for idx, m in enumerate(active_modes))
+                total_w = sum(1.0 - 0.05 * idx for idx in range(len(active_modes)))
+                combined_neg = -round(weighted / max(total_w, 1.0), 4)
+                return base + (combined_neg, has_rel, rel, co2, price_cents)
+
             eligible.sort(key=rank_key)
             blocked.sort(key=rank_key)
             blocking_allergens: list[Allergen] = sorted(
@@ -1996,21 +2257,31 @@ class ValioClient:
         query: str,
         exclude_allergens: list[Allergen] | None = None,
         priority_mode: PriorityMode | None = None,
+        priority_modes: list[PriorityMode] | None = None,
     ) -> tuple[list[Product], list[Allergen]]:
         """Return catalog matches blocked due to excluded company/request allergens when no allergen-safe option exists."""
         self._check_agent_permission("kitchen", "search", "Searched catalog")
         eligible, blocked, blocking_allergens = self._run_catalog_search(
-            query, priority_mode=priority_mode, extra_excluded=set(exclude_allergens or [])
+            query, priority_mode=priority_mode, extra_excluded=set(exclude_allergens or []), priority_modes=priority_modes
         )
         if eligible:
             return [], []
         return blocked, blocking_allergens
 
-    def search_products(self, query: str, priority_mode: PriorityMode | None = None) -> list[Product]:
+    def search_products(
+        self,
+        query: str,
+        priority_mode: PriorityMode | None = None,
+        priority_modes: list[PriorityMode] | None = None,
+    ) -> list[Product]:
         self._check_agent_permission("kitchen", "search", "Searched catalog")
-        active_priority = self._resolve_priority_mode(priority_mode, query)
-        eligible, _blocked, _blocking = self._run_catalog_search(query, priority_mode=active_priority)
-        self._record_event("kitchen", "Searched catalog", "completed", f"Query '{query}' ({active_priority}) · {len(eligible)} matches")
+        active_modes = self._resolve_priority_modes(priority_mode, priority_modes, query)
+        active_priority = active_modes[0]
+        eligible, _blocked, _blocking = self._run_catalog_search(
+            query, priority_mode=active_priority, priority_modes=active_modes
+        )
+        mode_desc = "+".join(active_modes) if len(active_modes) > 1 else active_priority
+        self._record_event("kitchen", "Searched catalog", "completed", f"Query '{query}' ({mode_desc}) · {len(eligible)} matches")
         return eligible
 
     def check_availability(
@@ -2180,13 +2451,18 @@ class ValioClient:
         requested_date: date | None = None,
         exclude_allergens: list[Allergen] | None = None,
         priority_mode: PriorityMode | None = None,
+        priority_modes: list[PriorityMode] | None = None,
     ) -> ProcurementPlan:
         """Volume-aware wholesale procurement planner (e.g. '1,000 litres of lactose-free milk by Monday')."""
         self._check_agent_permission("kitchen", "prepare", "Planned request")
-        active_priority = self._resolve_priority_mode(priority_mode, query)
-        delivery_date = requested_date or DEFAULT_MOCK_DELIVERY_DATE
+        active_modes = self._resolve_priority_modes(priority_mode, priority_modes, query)
+        active_priority = active_modes[0]
+        delivery_date = requested_date or self._default_delivery_date()
         excluded = self._effective_excluded_allergens(exclude_allergens)
-        matches = self.search_products(query, priority_mode=active_priority)
+        if "search_products" not in self.__dict__ and len(active_modes) > 1:
+            matches = self.search_products(query, priority_mode=active_priority, priority_modes=active_modes)
+        else:
+            matches = self.search_products(query, priority_mode=active_priority)
         if not matches:
             blocked, blocked_allergens = (
                 self.blocked_allergen_matches(query, exclude_allergens=list(excluded), priority_mode=active_priority)
@@ -2249,9 +2525,13 @@ class ValioClient:
 
         # Filter to candidates that have a known price or stock
         viable = [c for c in top_candidates if (c.stock is None or c.stock > 0)] or top_candidates[:3]
-        ranked = _rank_substitutes_good_better_best(viable[0], viable, priority_mode=active_priority)
+        ranked = _rank_substitutes_good_better_best(
+            viable[0], viable, priority_mode=active_priority, priority_modes=active_modes
+        )
         if viable and viable[0].product_id not in [r.product_id for r in ranked]:
-            ranked = _rank_substitutes_good_better_best(viable[0], viable, priority_mode=active_priority)
+            ranked = _rank_substitutes_good_better_best(
+                viable[0], viable, priority_mode=active_priority, priority_modes=active_modes
+            )
 
         options: list[FulfillmentOption] = []
         tiers: list[SubstituteTier] = ["best", "better", "good"]
@@ -2327,7 +2607,7 @@ class ValioClient:
                 remaining_vol -= take * unit_vol
 
         summary = (
-            f"[Priority: {PRIORITY_MODE_LABELS[active_priority]}] Found {len(options)} fulfillment options for "
+            f"[Priority: {' + '.join(PRIORITY_MODE_LABELS[m].split(' (')[0] for m in active_modes)}] Found {len(options)} fulfillment options for "
             f"{target_volume_liters_or_kg:g} L/kg of '{query}' by {delivery_date.isoformat()}. "
             + (options[0].tradeoff_explanation if options else "")
         )
@@ -2335,13 +2615,14 @@ class ValioClient:
             "kitchen",
             "Planned request",
             "completed",
-            f"{target_volume_liters_or_kg:g} L/kg · {query} · {delivery_date.isoformat()} ({active_priority})",
+            f"{target_volume_liters_or_kg:g} L/kg · {query} · {delivery_date.isoformat()} ({'+'.join(active_modes)})",
         )
         return ProcurementPlan(
             query=query,
             target_volume_liters_or_kg=target_volume_liters_or_kg,
             requested_date=delivery_date,
             priority_mode=active_priority,
+            priority_modes=active_modes,
             options=options,
             recommended_combined_lines=combined_lines,
             summary=summary,
@@ -2356,15 +2637,19 @@ class ValioClient:
             )
 
     def update_guardrails(self, guardrails: Guardrails) -> Guardrails:
+        normalized_modes = list(dict.fromkeys(guardrails.priority_modes or [guardrails.priority_mode])) or ["balanced"]
+        normalized = guardrails.model_copy(
+            update={"priority_mode": normalized_modes[0], "priority_modes": normalized_modes}
+        )
         with self.transaction(write=True) as db:
-            db.execute("UPDATE settings SET payload = ? WHERE id = 1", (guardrails.model_dump_json(),))
+            db.execute("UPDATE settings SET payload = ? WHERE id = 1", (normalized.model_dump_json(),))
         self._record_event(
             "kitchen",
             "Updated workspace policies",
             "completed",
-            f"Max auto-approve €{guardrails.max_auto_approve_cents / 100:,.2f}, allergens={guardrails.review_allergens}, min reliability={guardrails.min_delivery_reliability * 100:.0f}%",
+            f"Max auto-approve €{normalized.max_auto_approve_cents / 100:,.2f}, priorities={normalized.priority_modes}, allergens={normalized.review_allergens}, min reliability={normalized.min_delivery_reliability * 100:.0f}%",
         )
-        return guardrails
+        return normalized
 
     def _build_trust_verification(
         self,
@@ -2513,7 +2798,7 @@ class ValioClient:
             min_rel = min(reliabilities) if reliabilities else None
 
             (number,) = db.execute("SELECT COALESCE(MAX(number), 1043) + 1 FROM orders").fetchone()
-            now = datetime.now(timezone.utc)
+            now = self._now_utc()
             order_id = f"PO-{number}"
             trust = self._build_trust_verification(
                 order_id=order_id,
@@ -2670,7 +2955,7 @@ class ValioClient:
             min_rel = min(reliabilities) if reliabilities else None
 
             (number,) = db.execute("SELECT COALESCE(MAX(number), 1043) + 1 FROM orders").fetchone()
-            now = datetime.now(timezone.utc)
+            now = self._now_utc()
             order_id = f"PO-{number}"
             earliest_cutoff = min(closing_times) if closing_times else None
             trust = self._build_trust_verification(
@@ -2920,11 +3205,16 @@ class ValioClient:
         """
         agent = self._check_agent_permission(request.agent_id, "search", "Autonomous catalog lookup")
         self._check_agent_permission(request.agent_id, "prepare", "Autonomous procurement planning")
-        delivery_date = request.requested_date or DEFAULT_MOCK_DELIVERY_DATE
+        delivery_date = request.requested_date or self._default_delivery_date()
 
         with self.transaction() as db:
             ws_guardrails = self.guardrails(db)
-        active_priority = self._resolve_priority_mode(request.priority_mode, request.prompt)
+        active_modes = self._resolve_priority_modes(
+            request.priority_mode,
+            request.priority_modes,
+            request.prompt,
+        )
+        active_priority = active_modes[0]
         default_excluded = list(
             dict.fromkeys([*(request.exclude_allergens or []), *ws_guardrails.review_allergens])
         )
@@ -2935,7 +3225,11 @@ class ValioClient:
         proposed_lines: list[OrderLine] = []
 
         for idx, line in enumerate(parsed_lines, 1):
-            all_matches = self.search_products(line.query, priority_mode=active_priority)
+            all_matches = (
+                self.search_products(line.query, priority_mode=active_priority, priority_modes=active_modes)
+                if len(active_modes) > 1
+                else self.search_products(line.query, priority_mode=active_priority)
+            )
             cat_code = all_matches[0].category if all_matches else "N/A"
             claims_tag = ", ".join(all_matches[0].dietary_claims or []) if all_matches and all_matches[0].dietary_claims else "standard"
             alg_tag = ", ".join(line.exclude_allergens) if line.exclude_allergens else "none"
@@ -2950,10 +3244,14 @@ class ValioClient:
                     requested_date=delivery_date,
                     exclude_allergens=line.exclude_allergens,
                     priority_mode=active_priority,
+                    priority_modes=active_modes,
                 )
             except ProcurementError as exc:
                 blocked_prods, blocking_alg = self.blocked_allergen_matches(
-                    line.query, exclude_allergens=line.exclude_allergens, priority_mode=active_priority
+                    line.query,
+                    exclude_allergens=line.exclude_allergens,
+                    priority_mode=active_priority,
+                    priority_modes=active_modes,
                 )
                 if exc.status == 404 and blocked_prods and blocking_alg:
                     top_blocked = blocked_prods[:3]
@@ -3001,6 +3299,7 @@ class ValioClient:
                         prompt=request.prompt,
                         agent=self.get_agent(agent.id),
                         priority_mode=active_priority,
+                        priority_modes=active_modes,
                         requested_date=delivery_date,
                         orchestrator_model=model_used,
                         parsed_lines=parsed_lines,
@@ -3038,8 +3337,9 @@ class ValioClient:
                 else ""
             )
 
+            priority_tag = " + ".join(active_modes) if len(active_modes) > 1 else active_priority
             decision_trace.append(
-                f"2. Priority Ranking ({active_priority}): #1 [BEST] SKU {best_prod.product_id} — \"{best_prod.name}\" "
+                f"2. Priority Ranking ({priority_tag}): #1 [BEST] SKU {best_prod.product_id} — \"{best_prod.name}\" "
                 f"({rel_str} · {co2_str} · {comp_str}){runner_up}"
             )
 
@@ -3122,6 +3422,7 @@ class ValioClient:
                 "4. Preview Mode: Prepared order lines without submitting."
             )
 
+        priority_desc = " + ".join(m.replace("_", " ") for m in active_modes)
         if created_order and created_order.items:
             first_item = created_order.items[0]
             first_prod = (self.supplier.product_by_id(first_item.product_id) if self.supplier else None) or CATALOG.get(first_item.product_id.upper())
@@ -3138,7 +3439,7 @@ class ValioClient:
             )
             summary = (
                 f"Selected SKU {first_item.product_id} — \"{first_item.name}\" ({first_item.quantity} × {first_item.unit} = "
-                f"€{created_order.total_cents / 100:,.2f}) as #1 for {active_priority.replace('_', ' ')} ({rel_txt}, {comp_txt}). "
+                f"€{created_order.total_cents / 100:,.2f}) as #1 for {priority_desc} ({rel_txt}, {comp_txt}). "
                 f"Created {created_order.id}: {why_status}"
             )
         else:
@@ -3147,6 +3448,7 @@ class ValioClient:
             prompt=request.prompt,
             agent=self.get_agent(agent.id),
             priority_mode=active_priority,
+            priority_modes=active_modes,
             requested_date=delivery_date,
             orchestrator_model=model_used,
             parsed_lines=parsed_lines,
@@ -3156,6 +3458,162 @@ class ValioClient:
             order=created_order,
             summary=summary,
         )
+
+    def schedule_state(self) -> ScheduleWorkspaceState:
+        with self.transaction(write=True) as db:
+            self._ensure_agent_tables(db)
+            row = db.execute("SELECT offset_seconds FROM sim_clock WHERE id = 1").fetchone()
+            offset = int(row[0]) if row else 0
+            rows = db.execute("SELECT payload FROM schedules ORDER BY created_seq DESC").fetchall()
+            rules = [ScheduledOrderRule.model_validate_json(payload) for (payload,) in rows]
+        real_now = datetime.now(timezone.utc)
+        return ScheduleWorkspaceState(
+            simulated_now=real_now + timedelta(seconds=offset),
+            real_now=real_now,
+            offset_seconds=offset,
+            rules=rules,
+        )
+
+    def create_schedule(self, request: CreateScheduleRequest) -> ScheduleWorkspaceState:
+        now = self._now_utc()
+        parsed_prompt, inferred_cadence, inferred_time, inferred_date = _parse_schedule_prompt(request.prompt, now)
+        cadence = request.cadence or inferred_cadence
+        run_time = (request.run_time or inferred_time).strip()
+        if not re.match(r"^\d{1,2}:\d{2}$", run_time):
+            raise ProcurementError("Schedule time must use HH:MM format (e.g. 07:00).", 422)
+        h_s, _, m_s = run_time.partition(":")
+        run_time = f"{max(0, min(23, int(h_s))):02d}:{max(0, min(59, int(m_s))):02d}"
+        next_run = _compute_next_run_at(cadence, run_time, now, start_date=request.start_date or inferred_date)
+
+        with self.transaction(write=True) as db:
+            self._ensure_agent_tables(db)
+            (seq_num,) = db.execute("SELECT COALESCE(MAX(created_seq), 100) + 1 FROM schedules").fetchone()
+            rule = ScheduledOrderRule(
+                id=f"SCH-{seq_num}",
+                prompt=parsed_prompt,
+                cadence=cadence,
+                run_time=run_time,
+                next_run_at=next_run,
+                created_at=now,
+            )
+            db.execute(
+                "INSERT INTO schedules (id, created_seq, payload) VALUES (?, ?, ?)",
+                (rule.id, seq_num, rule.model_dump_json()),
+            )
+        self._record_event(
+            "kitchen",
+            "Created scheduled auto-buy",
+            "completed",
+            f"{rule.id} ({rule.cadence} @ {rule.run_time} Helsinki) · '{rule.prompt}'",
+        )
+        return self.schedule_state()
+
+    def update_schedule(self, rule_id: str, update: ScheduleUpdate) -> ScheduleWorkspaceState:
+        with self.transaction(write=True) as db:
+            self._ensure_agent_tables(db)
+            row = db.execute("SELECT payload FROM schedules WHERE id = ?", (rule_id,)).fetchone()
+            if not row:
+                raise ProcurementError(f"Unknown schedule ID: {rule_id}", 404)
+            rule = ScheduledOrderRule.model_validate_json(row[0]).model_copy(update={"enabled": update.enabled})
+            db.execute("UPDATE schedules SET payload = ? WHERE id = ?", (rule.model_dump_json(), rule_id))
+        return self.schedule_state()
+
+    def delete_schedule(self, rule_id: str) -> ScheduleWorkspaceState:
+        with self.transaction(write=True) as db:
+            self._ensure_agent_tables(db)
+            cur = db.execute("DELETE FROM schedules WHERE id = ?", (rule_id,))
+            if cur.rowcount == 0:
+                raise ProcurementError(f"Unknown schedule ID: {rule_id}", 404)
+        return self.schedule_state()
+
+    def advance_clock(self, request: ClockAdvanceRequest) -> ClockAdvanceResponse:
+        if request.reset:
+            with self.transaction(write=True) as db:
+                self._ensure_agent_tables(db)
+                db.execute("UPDATE sim_clock SET offset_seconds = 0 WHERE id = 1")
+            self._record_event("kitchen", "Reset simulated clock", "completed", "Returned kitchen clock to live real-time.")
+            state = self.schedule_state()
+            return ClockAdvanceResponse(**state.model_dump(), executed_runs=[])
+
+        real_now = datetime.now(timezone.utc)
+        with self.transaction(write=True) as db:
+            self._ensure_agent_tables(db)
+            offset = int(db.execute("SELECT offset_seconds FROM sim_clock WHERE id = 1").fetchone()[0])
+            current_sim = real_now + timedelta(seconds=offset)
+
+            if request.jump_to_next_schedule:
+                rows = db.execute("SELECT payload FROM schedules ORDER BY created_seq ASC").fetchall()
+                active_rules = [ScheduledOrderRule.model_validate_json(p) for (p,) in rows if ScheduledOrderRule.model_validate_json(p).enabled]
+                if not active_rules:
+                    delta_secs = 24 * 3600
+                else:
+                    earliest = min(r.next_run_at for r in active_rules)
+                    diff = (earliest - current_sim).total_seconds()
+                    delta_secs = max(60, int(diff) + 60)
+            else:
+                delta_secs = request.days * 86400 + request.hours * 3600 + request.minutes * 60
+
+            new_offset = offset + delta_secs
+            target_sim = real_now + timedelta(seconds=new_offset)
+            db.execute("UPDATE sim_clock SET offset_seconds = ? WHERE id = 1", (new_offset,))
+
+        executed_runs: list[ScheduledRunExecution] = []
+        for _ in range(14):
+            state_now = self.schedule_state()
+            due = sorted(
+                (r for r in state_now.rules if r.enabled and r.next_run_at <= target_sim),
+                key=lambda r: r.next_run_at,
+            )
+            if not due:
+                break
+            rule = due[0]
+            scheduled_for = rule.next_run_at
+            delivery_for_run = scheduled_for.astimezone(HELSINKI_TZ).date() + timedelta(days=1)
+            execution = self.execute_trade_request(
+                AgentExecutionRequest(
+                    prompt=rule.prompt,
+                    requested_date=delivery_for_run,
+                    auto_place_order=rule.auto_place_order,
+                )
+            )
+            if rule.cadence == "once":
+                updated_rule = rule.model_copy(
+                    update={
+                        "enabled": False,
+                        "last_run_at": scheduled_for,
+                        "last_order_id": execution.order.id if execution.order else None,
+                        "last_status": "rejected" if execution.rejected else (execution.order.status if execution.order else "completed"),
+                        "last_summary": execution.summary,
+                        "runs_completed": rule.runs_completed + 1,
+                    }
+                )
+            else:
+                next_trigger = _compute_next_run_at(rule.cadence, rule.run_time, scheduled_for + timedelta(minutes=1))
+                updated_rule = rule.model_copy(
+                    update={
+                        "next_run_at": next_trigger,
+                        "last_run_at": scheduled_for,
+                        "last_order_id": execution.order.id if execution.order else None,
+                        "last_status": "rejected" if execution.rejected else (execution.order.status if execution.order else "completed"),
+                        "last_summary": execution.summary,
+                        "runs_completed": rule.runs_completed + 1,
+                    }
+                )
+            with self.transaction(write=True) as db:
+                db.execute("UPDATE schedules SET payload = ? WHERE id = ?", (updated_rule.model_dump_json(), rule.id))
+            self._record_event(
+                "kitchen",
+                f"Scheduled auto-buy ({rule.id})",
+                "rejected" if execution.rejected else ("pending" if execution.order and execution.order.status == "pending" else "completed"),
+                f"{scheduled_for.astimezone(HELSINKI_TZ).strftime('%Y-%m-%d %H:%M')} · {execution.summary}",
+                order_id=execution.order.id if execution.order else None,
+            )
+            executed_runs.append(
+                ScheduledRunExecution(rule=updated_rule, scheduled_for=scheduled_for, execution=execution)
+            )
+
+        final_state = self.schedule_state()
+        return ClockAdvanceResponse(**final_state.model_dump(), executed_runs=executed_runs)
 
 
 # Load both repository root .env and backend/.env so all keys (VALIO_API_KEY, GEMINI_API_KEY, etc.) are available

@@ -54,3 +54,17 @@ test("planning and availability agree on reservations and release rejected order
   await client.request(`orders/${pending.id}`, "PATCH", { decision: "rejected" });
   assert.equal((await client.request("check_availability?product_id=AIMO-101&quantity=1")).available_quantity, 4880);
 });
+
+test("scheduled auto-buy executes live when advancing the simulated clock into the future", async () => {
+  const client = createBrowserPreview();
+  const created = await client.request("schedules", "POST", { prompt: "Every day at 07:00 buy 20 L lactose-free milk" });
+  assert.equal(created.rules.length, 1);
+  assert.equal(created.rules[0].cadence, "daily");
+  assert.equal(created.rules[0].run_time, "07:00");
+  const advanced = await client.request("clock/advance", "POST", { days: 1 });
+  assert.equal(advanced.executed_runs.length, 1);
+  assert.equal(advanced.rules[0].runs_completed, 1);
+  assert.ok(advanced.executed_runs[0].execution.order?.id);
+  const reset = await client.request("clock/advance", "POST", { reset: true });
+  assert.equal(reset.offset_seconds, 0);
+});

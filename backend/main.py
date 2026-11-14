@@ -10,8 +10,10 @@ from mcp_server import mcp
 from image_references import ImageReferences, image_search
 from valio_client import (
     ActivityEvent, AgentExecutionRequest, AgentExecutionResult, AgentProfile, AgentUpdate,
-    Allergen, Availability, Guardrails, PriorityMode, ProcurementError, ProcurementPlan,
-    Product, ProductId, PurchaseOrder, PurchaseOrderRequest, SearchTerm, Workspace, client,
+    Allergen, Availability, ClockAdvanceRequest, ClockAdvanceResponse, CreateScheduleRequest,
+    Guardrails, PriorityMode, ProcurementError, ProcurementPlan, Product, ProductId,
+    PurchaseOrder, PurchaseOrderRequest, ScheduleUpdate, ScheduleWorkspaceState,
+    SearchTerm, Workspace, client,
 )
 
 mcp_app = mcp.http_app(path="/mcp", stateless_http=True, json_response=True)
@@ -134,6 +136,31 @@ def list_events() -> list[ActivityEvent]:
 @app.post("/api/agent_execute")
 def agent_execute(request: AgentExecutionRequest) -> AgentExecutionResult:
     return client.execute_trade_request(request)
+
+
+@app.get("/api/schedules")
+def list_schedules() -> ScheduleWorkspaceState:
+    return client.schedule_state()
+
+
+@app.post("/api/schedules", status_code=201)
+def create_schedule(request: CreateScheduleRequest) -> ScheduleWorkspaceState:
+    return client.create_schedule(request)
+
+
+@app.patch("/api/schedules/{rule_id}")
+def update_schedule(rule_id: str, body: ScheduleUpdate) -> ScheduleWorkspaceState:
+    return client.update_schedule(rule_id, body)
+
+
+@app.delete("/api/schedules/{rule_id}")
+def delete_schedule(rule_id: str) -> ScheduleWorkspaceState:
+    return client.delete_schedule(rule_id)
+
+
+@app.post("/api/clock/advance")
+def advance_clock(request: ClockAdvanceRequest) -> ClockAdvanceResponse:
+    return client.advance_clock(request)
 
 
 @app.get("/api/image_references")

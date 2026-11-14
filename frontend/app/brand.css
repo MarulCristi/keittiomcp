@@ -464,3 +464,98 @@ button:disabled { opacity: .5; }
   .outcome-banner { padding: 14px; }
   .outcome-why-pending .primary-button { white-space: normal; text-align: left; line-height: 1.5; }
 }
+
+/* Future Clock Simulator Bar (strokeless elevation matching brand palette) */
+.future-clock-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 18px; padding: 12px 18px; border: 0; border-radius: 8px;
+  background: var(--surface); box-shadow: 0 3px 14px rgb(7 59 112 / .07);
+}
+.future-clock-bar.is-future {
+  background: linear-gradient(135deg, var(--sky-50) 0%, var(--orange-50) 100%);
+  box-shadow: 0 4px 18px rgb(24 123 221 / .14);
+}
+.future-clock-status { display: flex; align-items: center; gap: 12px; }
+.future-clock-icon {
+  display: grid; place-items: center; width: 34px; height: 34px; border-radius: 7px;
+  background: var(--tint); color: var(--accent-dark); flex-shrink: 0;
+}
+.future-clock-bar.is-future .future-clock-icon { background: var(--orange-100); color: var(--orange-800); }
+.future-clock-status strong { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--ink); }
+.future-clock-status small { display: block; font-size: 11px; color: var(--secondary-text); margin-top: 2px; }
+.future-clock-badge {
+  font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 99px;
+  background: var(--slate-100); color: var(--slate-700);
+}
+.future-clock-badge.active { background: var(--orange-600); color: var(--surface); }
+.future-clock-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.clock-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border: 0; border-radius: 99px;
+  background: var(--slate-100); color: var(--ink); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.clock-chip:hover:not(:disabled) { background: var(--tint); color: var(--accent-dark); }
+.clock-chip.primary { background: var(--navy-800); color: var(--surface); }
+.clock-chip.primary:hover:not(:disabled) { background: var(--accent-dark); color: var(--surface); }
+.clock-chip.accent { background: var(--electric-600); color: var(--surface); }
+.clock-chip.is-playing { background: var(--orange-600); color: var(--surface); }
+
+/* Priority & Schedule Quickbars (strokeless) */
+.kitchen-guardrails-quickbar { display: grid; gap: 0; }
+.quickbar-head-right { display: flex; align-items: center; gap: 10px; }
+.quick-setup-btn { font-size: 11px; display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 600; }
+.priority-quickbar { padding: 12px 20px; border: 0; background: var(--sky-50); }
+.priority-active-summary { font-size: 11px; font-weight: 700; color: var(--accent-dark); }
+.priority-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 99px; border: 0;
+  background: var(--surface); box-shadow: 0 1px 4px rgb(7 59 112 / .07); color: var(--ink);
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.priority-chip:hover { background: var(--tint); color: var(--accent-dark); }
+.priority-chip.is-selected { background: var(--navy-800); color: var(--surface); box-shadow: 0 2px 8px rgb(7 59 112 / .2); }
+
+.schedule-quickbar { padding: 11px 20px; border: 0; background: var(--slate-50); }
+.schedule-inline-form {
+  display: grid; grid-template-columns: minmax(0, 1.8fr) auto auto auto; gap: 8px;
+  margin-top: 9px; align-items: center;
+}
+.schedule-inline-form input, .schedule-inline-form select {
+  border: 0; border-radius: 6px; padding: 7px 10px; font-size: 12px;
+  background: var(--surface); box-shadow: 0 1px 4px rgb(7 59 112 / .08); color: var(--ink);
+}
+.schedule-pills-list { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; }
+.schedule-rule-pill {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 12px; border: 0; border-radius: 7px; background: var(--surface);
+  box-shadow: 0 1px 5px rgb(7 59 112 / .06);
+}
+.schedule-rule-pill.is-paused { opacity: .62; }
+.schedule-rule-pill strong { display: block; font-size: 12px; font-weight: 600; color: var(--ink); }
+.schedule-rule-pill small { display: block; font-size: 11px; color: var(--secondary-text); margin-top: 2px; }
+.schedule-rule-pill code { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--tint); color: var(--accent-dark); }
+.schedule-rule-actions { display: flex; align-items: center; gap: 6px; }
+.schedule-rule-actions button {
+  display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 5px;
+  background: var(--slate-100); color: var(--ink); cursor: pointer;
+}
+.schedule-rule-actions button:hover { background: var(--tint); color: var(--accent-dark); }
+
+/* First-visit Onboarding Modal (strokeless elevation) */
+.onboarding-backdrop {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 20px;
+  background: rgb(7 59 112 / .38); backdrop-filter: blur(4px);
+}
+.onboarding-modal {
+  width: min(100%, 560px); border: 0; border-radius: 12px; padding: 26px;
+  background: var(--surface); box-shadow: 0 22px 54px rgb(7 59 112 / .24);
+  display: grid; gap: 20px;
+}
+.onboarding-head { display: flex; align-items: flex-start; gap: 14px; }
+.onboarding-head h2 { margin: 0; font-size: 20px; font-weight: 600; color: var(--ink); }
+.onboarding-head p { margin: 4px 0 0; font-size: 13px; color: var(--secondary-text); line-height: 1.45; }
+.onboarding-block strong { display: block; font-size: 12px; font-weight: 700; color: var(--navy-700); text-transform: uppercase; letter-spacing: .03em; }
+.onboarding-actions { display: flex; justify-content: flex-end; align-items: center; gap: 14px; margin-top: 4px; }
+
+@media (max-width: 700px) {
+  .future-clock-bar { flex-direction: column; align-items: flex-start; }
+  .schedule-inline-form { grid-template-columns: 1fr; }
+}

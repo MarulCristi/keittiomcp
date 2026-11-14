@@ -197,6 +197,120 @@ class CatalogAndErrorTests(unittest.TestCase):
         self.assertEqual(result.proposed_order_lines[0].product_id, "MILK-1")
         self.assertEqual(result.plans[0].options[0].product.product_id, "MILK-1")
 
+    def test_strict_category_lock_never_jumps_categories(self):
+        # When fish category exists in catalog with 0 vegan salmon, search must NEVER jump to another category
+        real_salmon = Product(
+            product_id="SALMON-1",
+            name="Norwegian Salmon Fillet 2kg",
+            category="18701",
+            unit="2 kg",
+            unit_price_cents=2500,
+            net_volume_liters_or_kg=2.0,
+            allergens=["fish"],
+            dietary_claims=[],
+        )
+        chocolate = Product(
+            product_id="CHOC-V",
+            name="Vegan salmon-flavored snack 100g",
+            category="52290",
+            unit="100 g",
+            unit_price_cents=290,
+            net_volume_liters_or_kg=0.1,
+            allergens=[],
+            dietary_claims=["vegan"],
+        )
+        self.client.supplier = SimpleNamespace(
+            transport=None,
+            data_dir=None,
+            mode="junction",
+            catalog=lambda: (real_salmon, chocolate),
+            product_by_id=lambda pid: {"SALMON-1": real_salmon, "CHOC-V": chocolate}.get(pid),
+            explicit_substitutes=lambda pid: [],
+            check_batch_availability=lambda *a, **k: ({}, "2026-11-14T20:00:00Z"),
+        )
+        self.assertEqual(self.client.search_products("vegan salmon"), [])
+
+    def test_uniform_base_and_combined_priorities(self):
+        from valio_client import _rank_substitutes_good_better_best
+
+        # Processed/flavored variant should lose to pure ingredient even if cheaper or Finnish
+        pure_non_fi = Product(
+            product_id="MILK-PURE-EU",
+            name="Skimmed milk 1L",
+            category="10400",
+            unit="1 L",
+            unit_price_cents=180,
+            comparison_price_cents=180,
+            comparison_unit="L",
+            country_of_origin="SE",
+            purity_tier=0,
+            carbon_footprint_kg=1.4,
+            delivery_reliability=0.98,
+            stock=50,
+        )
+        pure_fi_low_co2 = Product(
+            product_id="MILK-FI-ECO",
+            name="Valio skimmed milk 1L",
+            category="10400",
+            unit="1 L",
+            unit_price_cents=155,
+            comparison_price_cents=155,
+            comparison_unit="L",
+            country_of_origin="FI",
+            purity_tier=0,
+            carbon_footprint_kg=0.9,
+            delivery_reliability=0.99,
+            stock=50,
+        )
+        chocolate_milk_fi = Product(
+            product_id="MILK-CHOC-FI",
+            name="Chocolate milk drink 1L",
+            category="10400",
+            unit="1 L",
+            unit_price_cents=90,
+            comparison_price_cents=90,
+            comparison_unit="L",
+            country_of_origin="FI",
+            purity_tier=2,
+            carbon_footprint_kg=0.7,
+            delivery_reliability=1.0,
+            stock=50,
+        )
+        ranked_cheap = _rank_substitutes_good_better_best(
+            pure_non_fi,
+            [chocolate_milk_fi, pure_non_fi, pure_fi_low_co2],
+            priority_mode="lowest_price",
+        )
+        # Uniform base puts pure ingredient matches ahead of processed chocolate milk even in lowest_price
+        self.assertEqual(ranked_cheap[0].product_id, "MILK-FI-ECO")
+        self.assertEqual(ranked_cheap[-1].product_id, "MILK-CHOC-FI")
+
+        ranked_combined = _rank_substitutes_good_better_best(
+            pure_non_fi,
+            [pure_non_fi, pure_fi_low_co2],
+            priority_modes=["authentic_finnish", "low_carbon"],
+        )
+        self.assertEqual(ranked_combined[0].product_id, "MILK-FI-ECO")
+        self.assertIn("COMBINED PRIORITY", ranked_combined[0].substitute_reason or "")
+
+    def test_schedule_creation_and_future_clock_execution(self):
+        from valio_client import ClockAdvanceRequest, CreateScheduleRequest
+
+        state = self.client.create_schedule(CreateScheduleRequest(prompt="Every day at 07:00 buy 20 L milk"))
+        self.assertEqual(len(state.rules), 1)
+        rule = state.rules[0]
+        self.assertEqual(rule.cadence, "daily")
+        self.assertEqual(rule.run_time, "07:00")
+        self.assertIn("milk", rule.prompt.lower())
+
+        adv = self.client.advance_clock(ClockAdvanceRequest(days=1))
+        self.assertEqual(len(adv.executed_runs), 1)
+        self.assertIsNotNone(adv.executed_runs[0].execution.order)
+        self.assertEqual(adv.rules[0].runs_completed, 1)
+
+        reset_state = self.client.advance_clock(ClockAdvanceRequest(reset=True))
+        self.assertEqual(reset_state.offset_seconds, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

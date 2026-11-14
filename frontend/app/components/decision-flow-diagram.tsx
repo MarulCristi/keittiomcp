@@ -78,7 +78,15 @@ export default function DecisionFlowDiagram({
   const isRejected = Boolean(execution?.rejected);
   const rejectedProducts = execution?.rejected_products ?? [];
   const excludedSet = new Set(parsedLine?.exclude_allergens ?? guardrails?.review_allergens ?? []);
-  const priorityMode: PriorityMode = execution?.priority_mode ?? guardrails?.priority_mode ?? "balanced";
+  const activePriorities: PriorityMode[] = execution?.priority_modes?.length
+    ? execution.priority_modes
+    : guardrails?.priority_modes?.length
+      ? guardrails.priority_modes
+      : [execution?.priority_mode ?? guardrails?.priority_mode ?? "balanced"];
+  const priorityMode: PriorityMode = activePriorities[0] ?? "balanced";
+  const priorityTitle = activePriorities.length > 1
+    ? activePriorities.map((m) => PRIORITY_LABELS[m].split(" (")[0]).join(" + ")
+    : PRIORITY_LABELS[priorityMode];
   const maxApproveCents = guardrails?.max_auto_approve_cents ?? 25000;
 
   if (!execution && !activeOrder && trace.length === 0) return null;
@@ -152,7 +160,7 @@ export default function DecisionFlowDiagram({
                 )}
                 <div><span>Delivery date</span><code>{execution?.requested_date ?? tv?.requested_delivery_date ?? "2026-11-16"}</code></div>
                 <div><span>Excluded allergens</span><code>{(parsedLine?.exclude_allergens ?? guardrails?.review_allergens ?? []).join(", ") || "None"}</code></div>
-                <div><span>Kitchen priority</span><strong>{PRIORITY_LABELS[priorityMode]}</strong></div>
+                <div><span>Kitchen priority</span><strong>{priorityTitle}</strong></div>
               </div>
               {trace[0] && <pre className="step-console-line">{trace[0]}</pre>}
             </div>
@@ -178,7 +186,7 @@ export default function DecisionFlowDiagram({
             <div className="step-dropdown-inner">
               <p className="step-explain-text">
                 Evaluated {options.length > 0 ? `top ${options.length} pure & category-matched Valio Aimo SKUs` : "catalog matches"} under{" "}
-                <strong>{PRIORITY_LABELS[priorityMode]}</strong> weighting (ingredient purity tier, delivery reliability, CO₂e/kg vs category median, and comparison price/kg or L).
+                <strong>{priorityTitle}</strong> weighting (ingredient purity tier, delivery reliability, CO₂e/kg vs category median, and comparison price/kg or L).
               </p>
               {trace[1] && <pre className="step-console-line">{trace[1]}</pre>}
             </div>
@@ -382,7 +390,7 @@ export default function DecisionFlowDiagram({
         <section className="choices-section" aria-label="Top product choices compared">
           <div className="choices-header">
             <span className="choices-eyebrow"><Sparkles size={13} /> Top {Math.min(options.length, 3)} choices compared</span>
-            <span className="choices-priority-tag">{PRIORITY_LABELS[priorityMode]}</span>
+            <span className="choices-priority-tag">{priorityTitle}</span>
           </div>
           <div className="choices-list">
             {options.slice(0, 3).map((opt, idx) => {

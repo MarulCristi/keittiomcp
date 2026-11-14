@@ -1,6 +1,7 @@
 export type Allergen = "milk" | "gluten" | "soy" | "eggs" | "nuts" | "fish";
 export type PriorityMode = "balanced" | "low_carbon" | "lowest_price" | "authentic_finnish" | "highest_reliability";
-export type Guardrails = { max_auto_approve_cents: number; review_allergens: Allergen[]; min_delivery_reliability?: number; require_approval_on_substitution?: boolean; priority_mode?: PriorityMode };
+export type ScheduledOrderCadence = "once" | "daily" | "weekdays" | "weekly";
+export type Guardrails = { max_auto_approve_cents: number; review_allergens: Allergen[]; min_delivery_reliability?: number; require_approval_on_substitution?: boolean; priority_mode?: PriorityMode; priority_modes?: PriorityMode[] };
 export type Product = {
   product_id: string;
   name: string;
@@ -68,6 +69,7 @@ export type AgentExecutionResult = {
   agent?: { id: string; name: string; spending_limit_cents?: number };
   requested_date: string;
   priority_mode?: PriorityMode;
+  priority_modes?: PriorityMode[];
   orchestrator_model: string;
   parsed_lines: { query: string; target_volume_liters_or_kg: number; unit_hint: string; exclude_allergens: Allergen[] }[];
   plans?: { query?: string; target_volume_liters_or_kg?: number; summary?: string; options: FulfillmentPlanOption[] }[];
@@ -77,6 +79,35 @@ export type AgentExecutionResult = {
   rejection_reason?: string | null;
   rejected_products?: Product[];
   summary: string;
+};
+export type ScheduledOrderRule = {
+  id: string;
+  prompt: string;
+  cadence: ScheduledOrderCadence;
+  run_time: string;
+  next_run_at: string;
+  last_run_at?: string | null;
+  last_order_id?: string | null;
+  last_status?: string | null;
+  last_summary?: string | null;
+  enabled: boolean;
+  auto_place_order: boolean;
+  runs_completed: number;
+  created_at: string;
+};
+export type ScheduledRunExecution = {
+  rule: ScheduledOrderRule;
+  scheduled_for: string;
+  execution: AgentExecutionResult;
+};
+export type ScheduleWorkspaceState = {
+  simulated_now: string;
+  real_now: string;
+  offset_seconds: number;
+  rules: ScheduledOrderRule[];
+};
+export type ClockAdvanceResponse = ScheduleWorkspaceState & {
+  executed_runs: ScheduledRunExecution[];
 };
 export type BlockedAllergenMatches = { products: Product[]; blocking_allergens: Allergen[] };
 export type Availability = {
