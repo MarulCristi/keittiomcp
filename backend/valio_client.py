@@ -807,14 +807,22 @@ def _rank_substitutes_good_better_best(
     if not candidates:
         return []
 
+    stop_words = {"valio", "aimo", "arla", "atria", "saarioinen", "forssan", "fazer", "kg", "g", "l", "dl", "ml", "st", "ki", "ras", "uht", "lactose", "free", "laktoositon"}
+    orig_tokens = {
+        tok for tok in re.findall(r"[a-zäöå]{4,}", f"{original.name} {original.name_fi or ''}".casefold())
+        if tok not in stop_words
+    }
+
     def score_best(p: Product) -> tuple:
         in_stock = 1 if (p.stock is None or p.stock > 0) else 0
+        cand_text = f"{p.name} {p.name_fi or ''}".casefold()
+        name_sim = 1 if (not orig_tokens or any(tok in cand_text for tok in orig_tokens)) else 0
         same_claims = len(set(original.dietary_claims or []) & set(p.dietary_claims or []))
         rel = p.delivery_reliability if p.delivery_reliability is not None else 0.85
         co2_inv = -(p.carbon_footprint_kg if p.carbon_footprint_kg is not None else 50.0)
         labels_cnt = len(p.sustainability_labels or [])
         price_inv = -(p.comparison_price_cents or p.unit_price_cents or 999999)
-        return (in_stock, same_claims, round(rel, 3), round(co2_inv, 2), labels_cnt, price_inv)
+        return (in_stock, name_sim, same_claims, round(rel, 3), round(co2_inv, 2), labels_cnt, price_inv)
 
     ranked = sorted(candidates, key=score_best, reverse=True)
     result: list[Product] = []
@@ -1088,10 +1096,21 @@ class ValioClient:
                     and (not excluded or (item.allergens is not None and excluded.isdisjoint(item.allergens)))
                 ]
 
-            # Sort explicit supplier substitutes first, then by reliability & carbon footprint
+            # Sort explicit supplier substitutes first, then by keyword similarity to original product name, then reliability & CO2
+            stop_words = {"valio", "aimo", "arla", "atria", "saarioinen", "forssan", "fazer", "kg", "g", "l", "dl", "ml", "st", "ki", "ras", "uht", "lactose", "free", "laktoositon"}
+            orig_tokens = {
+                tok for tok in re.findall(r"[a-zäöå]{4,}", f"{original.name} {original.name_fi or ''}".casefold())
+                if tok not in stop_words
+            }
+
+            def sub_similarity(p: Product) -> int:
+                cand_text = f"{p.name} {p.name_fi or ''}".casefold()
+                return sum(1 for tok in orig_tokens if tok in cand_text)
+
             candidates.sort(
                 key=lambda p: (
                     0 if p.product_id in explicit_ids else 1,
+                    -sub_similarity(p),
                     -(p.delivery_reliability if p.delivery_reliability is not None else 0.0),
                     p.carbon_footprint_kg if p.carbon_footprint_kg is not None else 999.0,
                 )
