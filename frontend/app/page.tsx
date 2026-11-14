@@ -530,9 +530,9 @@ export default function Dashboard() {
             <button className="secondary-button" type="button" disabled={Boolean(activeAction) || sending} onClick={() => switchMode(!preview)}>{preview ? "Use service connection" : "Start browser preview"}</button>
           </div>
         </div>
-        {view === "overview" && <svg className="overview-wave" viewBox="0 0 1440 80" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+        <svg className="header-wave" viewBox="0 0 1440 80" preserveAspectRatio="none" aria-hidden="true" focusable="false">
           <path d="M0 42 C180 -8 330 -8 570 24 S1260 110 1440 36 L1440 0 H0 Z" />
-        </svg>}
+        </svg>
       </header>
 
       <main className="shell">

@@ -137,7 +137,8 @@ export default function DecisionFlowDiagram({
             aria-expanded={Boolean(openSteps[1])}
           >
             <span className="step-pill-icon sky"><Filter size={13} /></span>
-            <span className="step-pill-title">Step 1 · Category &amp; Dietary Filter</span>
+            <span className="step-pill-label">Step 1</span>
+            <span className="step-pill-title">Category &amp; Dietary Filter</span>
             <span className="step-pill-summary">{step1Summary}</span>
             <code className="step-pill-code">{step1Badge}</code>
             <ChevronDown size={14} className="step-pill-chevron" />
@@ -167,7 +168,8 @@ export default function DecisionFlowDiagram({
             aria-expanded={Boolean(openSteps[2])}
           >
             <span className="step-pill-icon blue"><Trophy size={13} /></span>
-            <span className="step-pill-title">Step 2 · Priority Ranking</span>
+            <span className="step-pill-label">Step 2</span>
+            <span className="step-pill-title">Priority Ranking</span>
             <span className="step-pill-summary">{step2Summary}</span>
             <code className="step-pill-code">{step2Badge}</code>
             <ChevronDown size={14} className="step-pill-chevron" />
@@ -194,7 +196,8 @@ export default function DecisionFlowDiagram({
             <span className={`step-pill-icon ${isSubstituted ? "orange" : "turquoise"}`}>
               {isSubstituted ? <ArrowDownUp size={13} /> : <PackageCheck size={13} />}
             </span>
-            <span className="step-pill-title">Step 3 · Pack Math &amp; Live Stock</span>
+            <span className="step-pill-label">Step 3</span>
+            <span className="step-pill-title">Pack Math &amp; Live Stock</span>
             <span className="step-pill-summary">{step3Summary}</span>
             <code className={`step-pill-code ${isSubstituted ? "warn" : ""}`}>{step3Badge}</code>
             <ChevronDown size={14} className="step-pill-chevron" />
@@ -244,7 +247,8 @@ export default function DecisionFlowDiagram({
             <span className={`step-pill-icon ${isRejected || activeOrder?.status === "pending" ? "orange" : "navy"}`}>
               {isRejected ? <Ban size={13} /> : activeOrder?.status === "pending" ? <ShieldAlert size={13} /> : <Lock size={13} />}
             </span>
-            <span className="step-pill-title">Step 4 · Guardrails &amp; Quote Lock</span>
+            <span className="step-pill-label">Step 4</span>
+            <span className="step-pill-title">Guardrails &amp; Quote Lock</span>
             <span className="step-pill-summary">{step4Summary}</span>
             <code className={`step-pill-code ${isRejected || activeOrder?.status === "pending" ? "warn" : "ok"}`}>{step4Badge}</code>
             <ChevronDown size={14} className="step-pill-chevron" />
