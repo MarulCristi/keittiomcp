@@ -20,6 +20,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 label:has(input:focus-visible) { outline: 3px solid var(--blue); outline-offset: 3px; }
 button:disabled { opacity: .5; }
 .topbar { background: var(--navy-600); border: 0; }
+.overview-wave { display: block; width: 100%; height: 56px; background: var(--paper); fill: var(--navy-600); pointer-events: none; }
+@media (max-width: 700px) { .overview-wave { height: 28px; } }
 .topbar-inner, .shell, .site-footer { max-width: 1536px; padding-inline: clamp(20px, 4.2vw, 64px); margin-inline: auto; }
 .topbar-inner { min-height: 100px; gap: 22px; }
 .brand-home { display: flex; align-items: center; gap: 4px; flex-shrink: 0; padding-right: 20px; border-right: 1px solid var(--navy-400); }
