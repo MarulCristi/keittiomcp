@@ -293,6 +293,28 @@ button:disabled { opacity: .5; }
 .outcome-approved-strip strong { display: block; font-size: 14px; font-weight: 850; }
 .outcome-approved-strip p { margin: 2px 0 0; font-size: 13px; line-height: 1.45; }
 
+/* Company Allergen Quick Selector (always visible at start of Purchasing Assistant) */
+.allergen-quickbar { padding: 12px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, var(--orange-50), var(--surface)); }
+.allergen-quickbar-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.allergen-quickbar-head strong { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 850; color: var(--navy-700); text-transform: uppercase; letter-spacing: .035em; }
+.allergen-count-badge { font-size: 11px; font-weight: 800; padding: 2px 9px; border-radius: 99px; background: var(--slate-100); color: var(--slate-700); }
+.allergen-count-badge.active { background: var(--orange-600); color: var(--surface); }
+.allergen-quick-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.allergen-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; }
+.allergen-chip:hover { border-color: var(--orange-400); background: var(--orange-50); }
+.allergen-chip.is-excluded { border-color: var(--orange-600); background: var(--orange-600); color: var(--surface); box-shadow: 0 2px 6px rgb(217 81 34 / .22); }
+.allergen-quickbar-note { margin: 7px 0 0; font-size: 11px; color: var(--secondary-text); line-height: 1.4; }
+
+/* Allergen Rejection Cards & Banner */
+.choices-section.choices-rejected { border-color: var(--orange-300); background: linear-gradient(180deg, var(--orange-50), var(--surface)); }
+.choice-row.is-rejected { opacity: .94; }
+.choice-rejected-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 800; padding: 2px 9px; border-radius: 99px; background: var(--orange-600); color: var(--surface); }
+.attr-pill.allergen-hit { background: var(--orange-100); border-color: var(--orange-300); color: var(--orange-900); font-weight: 700; }
+.outcome-banner.is-rejected { border-color: var(--orange-600); background: linear-gradient(180deg, var(--orange-100), var(--surface)); }
+.outcome-badge.rejected { background: var(--orange-700); color: var(--surface); }
+.outcome-why-rejected { margin-top: 12px; padding: 14px 16px; border-radius: 8px; background: var(--orange-50); border-left: 5px solid var(--orange-700); color: var(--orange-900); }
+.why-rejected-text { margin: 8px 0 0; font-size: 14.5px; font-weight: 700; line-height: 1.55; color: var(--orange-900); }
+
 .dashboard-grid.demo-review { grid-template-columns: minmax(0, 1fr); max-width: 800px; }
 .order-products, .order-requester { display: block; font-size: 12px; line-height: 1.5; margin-top: 5px; }
 .order-products { color: var(--ink); }

@@ -73,8 +73,12 @@ export type AgentExecutionResult = {
   plans?: { query?: string; target_volume_liters_or_kg?: number; summary?: string; options: FulfillmentPlanOption[] }[];
   order: Order | null;
   decision_trace: string[];
+  rejected?: boolean;
+  rejection_reason?: string | null;
+  rejected_products?: Product[];
   summary: string;
 };
+export type BlockedAllergenMatches = { products: Product[]; blocking_allergens: Allergen[] };
 export type Availability = {
   name: string;
   requested_quantity?: number;

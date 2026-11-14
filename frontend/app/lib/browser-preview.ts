@@ -157,8 +157,18 @@ export function createBrowserPreview() {
     } else if (route === "events") {
       response = events;
     } else if (route === "search_products") {
-      response = search(params.get("query") ?? "");
+      const excluded = guardrails.review_allergens;
+      response = search(params.get("query") ?? "", excluded);
       record(actor(), "Searched catalog", "completed", params.get("query") ?? "");
+    } else if (route === "blocked_allergen_matches") {
+      const q = params.get("query") ?? "";
+      const extra = params.getAll("exclude_allergens") as Allergen[];
+      const excluded = Array.from(new Set([...guardrails.review_allergens, ...extra]));
+      const rawMatches = search(q);
+      const safe = rawMatches.filter((item) => !excluded.some((alg) => (item.allergens ?? []).includes(alg)));
+      const blocked = safe.length ? [] : rawMatches.filter((item) => excluded.some((alg) => (item.allergens ?? []).includes(alg)));
+      const blocking = Array.from(new Set(blocked.flatMap((item) => (item.allergens ?? []).filter((alg) => excluded.includes(alg)))));
+      response = { products: blocked.slice(0, 3), blocking_allergens: blocking };
     } else if (route === "check_availability") {
       const item = product(params.get("product_id") ?? "");
       const quantity = Number(params.get("quantity") ?? 1);
@@ -184,27 +194,57 @@ export function createBrowserPreview() {
         }) };
       record(actor(), "Planned request", "completed", `${target} L/kg · ${params.get("query")} · ${date}`);
     } else if (route === "agent_execute" && method === "POST") {
-      const req = body as { prompt: string; agent_id?: string; requested_date?: string | null };
+      const req = body as { prompt: string; agent_id?: string; requested_date?: string | null; exclude_allergens?: Allergen[] };
       const date = req.requested_date || new Date().toISOString().slice(0, 10);
-      const matches = search(req.prompt);
-      const top = matches[0] ?? catalog[0];
-      const order = createOrder({ agent_id: req.agent_id ?? "kitchen", items: [{ product_id: top.product_id, quantity: 10 }], requested_date: date });
-      response = {
-        prompt: req.prompt,
-        agent: actor(req.agent_id ?? "kitchen"),
-        requested_date: date,
-        orchestrator_model: "browser-preview",
-        parsed_lines: [{ query: req.prompt, target_volume_liters_or_kg: 10, unit_hint: "L/kg", exclude_allergens: guardrails.review_allergens }],
-        plans: [{ options: [{ product: top }] }],
-        order,
-        decision_trace: [
-          `1. Category & Dietary Filter: Matched SKU ${top.product_id} — "${top.name}"`,
-          `2. Priority Ranking: #1 [BEST] (${((top.delivery_reliability ?? 0.99) * 100).toFixed(0)}% on-time)`,
-          `3. Pack Math & Live Stock: 10 × ${top.unit} (${stock(top)} available)`,
-          `4. Guardrail & Quote Lock: ${order.id} · ${order.status.toUpperCase()}`,
-        ],
-        summary: `Selected SKU ${top.product_id} — "${top.name}" (10 × ${top.unit}). Created ${order.id} (${order.status}).`,
-      };
+      const excluded = Array.from(new Set([...guardrails.review_allergens, ...(req.exclude_allergens ?? [])]));
+      const rawMatches = search(req.prompt);
+      const safeMatches = rawMatches.filter((item) => !excluded.some((alg) => (item.allergens ?? []).includes(alg)));
+      const blockedMatches = rawMatches.filter((item) => excluded.some((alg) => (item.allergens ?? []).includes(alg)));
+      if (safeMatches.length === 0 && blockedMatches.length > 0) {
+        const blocking = Array.from(new Set(blockedMatches.flatMap((item) => (item.allergens ?? []).filter((alg) => excluded.includes(alg)))));
+        const reason = `Products matched '${req.prompt}', but all were excluded by your allergen rules (${blocking.join(", ")}). No order was placed.`;
+        record(actor(req.agent_id ?? "kitchen"), "Allergen exclusion rejection", "rejected", reason);
+        response = {
+          prompt: req.prompt,
+          agent: actor(req.agent_id ?? "kitchen"),
+          requested_date: date,
+          orchestrator_model: "browser-preview",
+          parsed_lines: [{ query: req.prompt, target_volume_liters_or_kg: 10, unit_hint: "L/kg", exclude_allergens: excluded }],
+          plans: [],
+          order: null,
+          rejected: true,
+          rejection_reason: reason,
+          rejected_products: blockedMatches.slice(0, 3),
+          decision_trace: [
+            `1. Category & Dietary Filter: Found ${blockedMatches.length} matches, ALL ignored due to excluded allergens (${blocking.join(", ")}).`,
+            `2. Priority Ranking: 0 allergen-safe products available without (${blocking.join(", ")}).`,
+            "3. Pack Math & Live Stock: Skipped — no compliant SKU available.",
+            `4. Guardrail & Quote Lock: REJECTED — ${reason}`,
+          ],
+          summary: `Rejected: ${reason}`,
+        };
+      } else {
+        const top = safeMatches[0] ?? catalog[0];
+        const order = createOrder({ agent_id: req.agent_id ?? "kitchen", items: [{ product_id: top.product_id, quantity: 10 }], requested_date: date });
+        response = {
+          prompt: req.prompt,
+          agent: actor(req.agent_id ?? "kitchen"),
+          requested_date: date,
+          orchestrator_model: "browser-preview",
+          parsed_lines: [{ query: req.prompt, target_volume_liters_or_kg: 10, unit_hint: "L/kg", exclude_allergens: excluded }],
+          plans: [{ options: [{ product: top }] }],
+          order,
+          rejected: false,
+          rejected_products: [],
+          decision_trace: [
+            `1. Category & Dietary Filter: Matched SKU ${top.product_id} — "${top.name}"`,
+            `2. Priority Ranking: #1 [BEST] (${((top.delivery_reliability ?? 0.99) * 100).toFixed(0)}% on-time)`,
+            `3. Pack Math & Live Stock: 10 × ${top.unit} (${stock(top)} available)`,
+            `4. Guardrail & Quote Lock: ${order.id} · ${order.status.toUpperCase()}`,
+          ],
+          summary: `Selected SKU ${top.product_id} — "${top.name}" (10 × ${top.unit}). Created ${order.id} (${order.status}).`,
+        };
+      }
     } else {
       throw new Error("This action is unavailable in the browser preview.");
     }

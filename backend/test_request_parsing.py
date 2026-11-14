@@ -116,6 +116,46 @@ class CatalogAndErrorTests(unittest.TestCase):
         self.assertEqual(plan.options[0].recommended_packs, 4000)
         self.assertTrue(plan.options[0].can_fulfill_full_volume)
 
+    def test_ingredient_text_allergen_is_detected_and_ignored(self):
+        from valio_client import _parse_synkka_product, AgentExecutionRequest
+
+        parsed = _parse_synkka_product(
+            {
+                "id": "SYN-BREAD-1",
+                "category": "10100",
+                "salesUnit": "PAK",
+                "synkkaData": {
+                    "names": [{"language": "en", "value": "Bakery Roll 1kg"}],
+                    "ingredients": [{"names": [{"language": "en", "value": "wheat flour"}]}],
+                    "classifications": [],
+                },
+            },
+            {},
+            {},
+        )
+        self.assertIsNotNone(parsed)
+        roll, _ = parsed
+        self.assertIn("gluten", roll.allergens or [])
+
+        # Searching while gluten is in workspace guardrails must ignore the roll completely
+        self.client.supplier = SimpleNamespace(
+            transport=None,
+            catalog=lambda: (roll,),
+            product_by_id=lambda pid: roll if pid == roll.product_id else None,
+            explicit_substitutes=lambda pid: [],
+            check_batch_availability=lambda *a, **k: ({}, "2026-11-14T20:00:00Z"),
+        )
+        self.assertEqual(self.client.search_products("bakery roll"), [])
+
+        # Autonomous trade request with 0 safe matches returns rejected=True with blocked product cards
+        result = self.client.execute_trade_request(
+            AgentExecutionRequest(prompt="10 packs of bakery roll", auto_place_order=True)
+        )
+        self.assertTrue(result.rejected)
+        self.assertIsNone(result.order)
+        self.assertIn("gluten", result.rejection_reason or "")
+        self.assertEqual([p.product_id for p in result.rejected_products], ["SYN-BREAD-1"])
+
 
 if __name__ == "__main__":
     unittest.main()

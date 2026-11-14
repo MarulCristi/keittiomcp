@@ -657,6 +657,9 @@ class AgentExecutionResult(BaseModel):
     proposed_order_lines: list[OrderLine]
     decision_trace: list[str]
     order: PurchaseOrder | None = None
+    rejected: bool = False
+    rejection_reason: str | None = None
+    rejected_products: list[Product] = Field(default_factory=list)
     summary: str
 
 
@@ -760,6 +763,67 @@ def _extract_volume_and_unit(raw: dict[str, Any], name_en: str, name_fi: str) ->
     return None, "kg"
 
 
+_SAFE_NON_ALLERGEN_PHRASES_RE = re.compile(
+    r"\b(?:oat|soy|soya|almond|coconut|rice|cashew)\s+(?:milk|cream)\b"
+    r"|\b(?:kauramaito|soijamaito|mantelimaito|kookosmaito|riisimaito|kookoskerma|kasvirasvakerma)\b"
+    r"|\b(?:cocoa\s+butter|kaakaovoi|shea\s+butter|peanut\s+butter|almond\s+butter|maapähkinävoi)\b"
+    r"|\b(?:almond\s+potato|manteliperuna|butternut|eggplant|munakoiso|pak[-\s]?soy)\b"
+    r"|\b(?:gluten[-\s]?free|gluteeniton|gluteenittomat|milk[-\s]?free|maidoton|lactose[-\s]?free|laktoositon|soy[-\s]?free|soijaton|egg[-\s]?free|munaton|nut[-\s]?free|pähkinätön)\b",
+    re.IGNORECASE,
+)
+
+_INGREDIENT_ALLERGEN_PATTERNS: dict[Allergen, re.Pattern[str]] = {
+    "milk": re.compile(
+        r"\b(?:milk|cow'?s\s+milk|skimmed\s+milk|whole\s+milk|buttermilk|whipping\s+cream|sour\s+cream|cream|cheese|mozzarella|cheddar|emmental|parmesan|edam|gouda|feta|ricotta|mascarpone|yogurt|yoghurt|whey|casein|butterfat|butteroil|ghee|butter|maito|rasvaton\s+maito|täysmaito|kerma|kuohukerma|hapankerma|piimä|juusto|hera|kaseiini|voi(?!\s+sisältää))\b",
+        re.IGNORECASE,
+    ),
+    "gluten": re.compile(
+        r"\b(?:wheat|wheat\s+flour|wheat\s+starch|rye|barley|spelt|durum|semolina|bulgur|couscous|seitan|barley\s+malt|rye\s+malt|gluten|vehnä|vehnäjauho|ruis|ohra|speltti)\b",
+        re.IGNORECASE,
+    ),
+    "nuts": re.compile(
+        r"\b(?:almond|almonds|hazelnut|hazelnuts|walnut|walnuts|cashew|cashews|pecan|pecans|pistachio|pistachios|macadamia|brazil\s+nut|pine\s+nut|peanut|peanuts|marzipan|nougat|praline|manteli|hasselpähkinä|saksanpähkinä|maapähkinä|pähkinä|marsipaani)\b",
+        re.IGNORECASE,
+    ),
+    "soy": re.compile(
+        r"\b(?:soy|soya|soybean|soybeans|soy\s+protein|soy\s+flour|soy\s+sauce|tofu|tempeh|edamame|miso|soija|soijapapu|soijaproteiini|soijajauho|soijakastike)\b",
+        re.IGNORECASE,
+    ),
+    "eggs": re.compile(
+        r"\b(?:egg|eggs|egg\s+yolk|egg\s+white|egg\s+powder|albumen|mayonnaise|kananmuna|munankeltuainen|munanvalkuainen|majoneesi)\b",
+        re.IGNORECASE,
+    ),
+    "fish": re.compile(
+        r"\b(?:fish|salmon|rainbow\s+trout|trout|cod|pollock|saithe|haddock|tuna|tunafish|herring|mackerel|sardine|anchovy|pike|perch|zander|whitefish|kala|lohi|kirjolohi|turska|seiti|tonnikala|silli|silakka|makrilli|hauki|ahven|kuha|siika)\b",
+        re.IGNORECASE,
+    ),
+}
+
+
+def _detect_ingredient_allergens(
+    raw: dict[str, Any], synkka: dict[str, Any], category: str, name_en: str, name_fi: str
+) -> set[Allergen]:
+    """Detect food allergens declared inside ingredient lists and product descriptions."""
+    if category.startswith(("63", "64", "20")):
+        return set()
+    parts: list[str] = []
+    for ing in synkka.get("ingredients") or []:
+        if isinstance(ing, dict):
+            for n in ing.get("names") or []:
+                if isinstance(n, dict) and n.get("value"):
+                    parts.append(str(n["value"]))
+    for k_ing in synkka.get("keyIngredients") or []:
+        if isinstance(k_ing, dict) and k_ing.get("value"):
+            parts.append(str(k_ing["value"]))
+    parts.extend([name_en, name_fi])
+    sanitized = _SAFE_NON_ALLERGEN_PHRASES_RE.sub(" ", " ".join(parts))
+    detected: set[Allergen] = set()
+    for allergen, pattern in _INGREDIENT_ALLERGEN_PATTERNS.items():
+        if pattern.search(sanitized):
+            detected.add(allergen)
+    return detected
+
+
 def _parse_synkka_product(
     raw: dict[str, Any],
     reliability_map: dict[str, float],
@@ -840,6 +904,7 @@ def _parse_synkka_product(
                     if pretty not in sustainability_labels:
                         sustainability_labels.append(pretty)
 
+    allergens_set |= _detect_ingredient_allergens(raw, synkka, category, name_en, name_fi or "")
     allergens_set -= free_from_allergens
 
     vol, unit_suffix = _extract_volume_and_unit(raw, name_en, name_fi or "")
@@ -1773,8 +1838,25 @@ class ValioClient:
         except Exception:
             return "balanced"
 
-    def search_products(self, query: str, priority_mode: PriorityMode | None = None) -> list[Product]:
-        self._check_agent_permission("kitchen", "search", "Searched catalog")
+    def _effective_excluded_allergens(
+        self, extra_allergens: list[Allergen] | set[Allergen] | None = None
+    ) -> set[Allergen]:
+        """Combine workspace excluded company allergens with any per-request exclusions (strict highest priority)."""
+        excluded: set[Allergen] = set(extra_allergens or [])
+        try:
+            with self.transaction() as db:
+                excluded |= set(self.guardrails(db).review_allergens)
+        except Exception:
+            pass
+        return excluded
+
+    def _run_catalog_search(
+        self,
+        query: str,
+        priority_mode: PriorityMode | None = None,
+        extra_excluded: set[Allergen] | None = None,
+    ) -> tuple[list[Product], list[Product], list[Allergen]]:
+        """Search catalog strictly ignoring any product with excluded allergens; return (eligible, blocked, blocking_allergens)."""
         active_priority = self._resolve_priority_mode(priority_mode, query)
         cleaned = _normalize_word_hyphens(_normalize_quantity_numbers(query.casefold())).strip()
         required_claims: list[str] = []
@@ -1798,51 +1880,40 @@ class ValioClient:
         if not terms and not required_claims:
             terms = _normalize_query_terms(query.casefold())
 
+        restricted_allergens = self._effective_excluded_allergens(extra_excluded)
+
         if self.supplier:
             catalog = self.supplier.catalog()
             target_categories = _resolve_target_categories(terms, cleaned)
-            try:
-                with self.transaction() as db:
-                    restricted_allergens = set(self.guardrails(db).review_allergens)
-            except Exception:
-                restricted_allergens = set()
 
-            def collect_matches(enforce_categories: bool, enforce_allergens: bool) -> list[Product]:
+            def collect_raw(enforce_categories: bool) -> list[Product]:
                 found: list[Product] = []
                 for product in catalog:
                     if enforce_categories and target_categories and product.category not in target_categories:
                         continue
                     if required_claims and not all(c in (product.dietary_claims or []) for c in required_claims):
                         continue
-                    if enforce_allergens and restricted_allergens and not restricted_allergens.isdisjoint(product.allergens or []):
-                        # Only filter out guardrail allergens if the user didn't explicitly ask for that allergen
-                        if not any(a in cleaned for a in restricted_allergens):
-                            continue
-                    searchable = _normalize_word_hyphens(f"{product.product_id} {product.name} {product.name_fi or ''} {product.category} {product.vendor or ''}".casefold())
-                    searchable_for_terms = re.sub(r"\bmilk[-\s]free\b", "dairy_excluded", searchable) if "milk" in terms else searchable
+                    searchable = _normalize_word_hyphens(
+                        f"{product.product_id} {product.name} {product.name_fi or ''} {product.category} {product.vendor or ''}".casefold()
+                    )
+                    searchable_for_terms = (
+                        re.sub(r"\bmilk[-\s]free\b", "dairy_excluded", searchable)
+                        if "milk" in terms
+                        else searchable
+                    )
                     if all(term in searchable_for_terms for term in terms):
                         found.append(product)
                 return found
 
-            # Step 1 & 2: Try strict category routing + guardrail allergen safety first
-            matches = collect_matches(enforce_categories=True, enforce_allergens=True)
-            if not matches and target_categories:
-                # Fallback if all items in the category contain a restricted allergen (e.g. wheat bread when gluten is restricted)
-                matches = collect_matches(enforce_categories=True, enforce_allergens=False)
-
-            # Gemini 3.8 Flash + Gemma 4 Privacy Filter fallback if 0 matches found for an unfamiliar culinary term
-            if not matches and self.supplier.transport is None:
+            raw_matches = collect_raw(enforce_categories=True)
+            if not raw_matches and self.supplier.transport is None:
                 ai_terms = self._translate_query_with_gemini(query)
                 if ai_terms:
                     terms = _normalize_query_terms(" ".join(ai_terms))
                     target_categories = _resolve_target_categories(terms, " ".join(ai_terms))
-                    matches = collect_matches(enforce_categories=True, enforce_allergens=True)
-
-            if not matches:
-                # Fallback to full catalog if custom/SKU query didn't match target_categories
-                matches = collect_matches(enforce_categories=False, enforce_allergens=True)
-            if not matches:
-                matches = collect_matches(enforce_categories=False, enforce_allergens=False)
+                    raw_matches = collect_raw(enforce_categories=True)
+            if not raw_matches:
+                raw_matches = collect_raw(enforce_categories=False)
 
             asked_for_processed = any(
                 w in terms for w in ("burger", "patty", "pihvi", "pie", "piirakka", "soup", "keitto", "ball", "meatball")
@@ -1850,13 +1921,8 @@ class ValioClient:
 
             def rank_key(item: Product) -> tuple:
                 exact_id = 0 if item.product_id.casefold() == query.strip().casefold() else 1
-                has_restricted_allergen = (
-                    0 if restricted_allergens.isdisjoint(item.allergens or []) else 1
-                )
-                # Step 3: Standard whole variety first (e.g. normal Class 1 tomato/capsicum over diced/cherry/paste), then purity
                 variety_pen = _compute_variety_penalty(item, terms, query.casefold())
                 purity = 0 if (asked_for_processed or item.category.startswith("174")) else item.purity_tier
-                # Prefer whole-word match of the search terms in the product name (e.g. 'salmon' over 'salmonburger')
                 name_words = set(re.findall(r"[a-zäöå0-9]+", f"{item.name} {item.name_fi or ''}".casefold()))
                 whole_word_match = 0 if all(t in name_words for t in terms) else 1
                 has_rel = 0 if item.delivery_reliability is not None else 1
@@ -1865,28 +1931,70 @@ class ValioClient:
                 not_fi = 0 if _is_finnish_product(item) else 1
                 vol_boost = -(item.net_volume_liters_or_kg or 0.0) if "1000" in query else 0.0
                 if active_priority == "authentic_finnish":
-                    return (exact_id, has_restricted_allergen, not_fi, variety_pen, purity, whole_word_match, has_rel, rel, co2)
+                    return (exact_id, not_fi, variety_pen, purity, whole_word_match, has_rel, rel, co2)
                 if active_priority == "low_carbon":
-                    return (exact_id, has_restricted_allergen, variety_pen, purity, whole_word_match, co2, has_rel, rel)
+                    return (exact_id, variety_pen, purity, whole_word_match, co2, has_rel, rel)
                 if active_priority == "highest_reliability":
-                    return (exact_id, has_restricted_allergen, has_rel, rel, variety_pen, purity, whole_word_match, co2)
-                return (exact_id, has_restricted_allergen, variety_pen, purity, whole_word_match, vol_boost, has_rel, rel, co2)
+                    return (exact_id, has_rel, rel, variety_pen, purity, whole_word_match, co2)
+                return (exact_id, variety_pen, purity, whole_word_match, vol_boost, has_rel, rel, co2)
 
-            matches.sort(key=rank_key)
-            top = matches[:25]
-            self._record_event("kitchen", "Searched catalog", "completed", f"Query '{query}' ({active_priority}) · {len(top)} matches")
-            return top
+            eligible = [
+                p for p in raw_matches
+                if not restricted_allergens or restricted_allergens.isdisjoint(p.allergens or [])
+            ]
+            blocked = [
+                p for p in raw_matches
+                if restricted_allergens and not restricted_allergens.isdisjoint(p.allergens or [])
+            ]
+            eligible.sort(key=rank_key)
+            blocked.sort(key=rank_key)
+            blocking_allergens: list[Allergen] = sorted(
+                restricted_allergens.intersection(a for p in blocked for a in (p.allergens or []))
+            )
+            return eligible[:25], blocked[:10], blocking_allergens
 
         with self.transaction() as db:
             stock = self.stock(self.orders(db))
-        demo_matches = [
+        raw_demo = [
             product.model_copy(update={"stock": stock[product.product_id]})
             for product in CATALOG.values()
             if (not required_claims or all(c in (product.dietary_claims or []) for c in required_claims))
             and all(term in _normalize_word_hyphens(f"{product.product_id} {product.name} {product.category}".casefold()) for term in terms)
         ]
-        self._record_event("kitchen", "Searched catalog", "completed", f"Query '{query}' · {len(demo_matches)} matches")
-        return demo_matches
+        eligible_demo = [
+            p for p in raw_demo
+            if not restricted_allergens or restricted_allergens.isdisjoint(p.allergens or [])
+        ]
+        blocked_demo = [
+            p for p in raw_demo
+            if restricted_allergens and not restricted_allergens.isdisjoint(p.allergens or [])
+        ]
+        blocking_demo: list[Allergen] = sorted(
+            restricted_allergens.intersection(a for p in blocked_demo for a in (p.allergens or []))
+        )
+        return eligible_demo, blocked_demo, blocking_demo
+
+    def blocked_allergen_matches(
+        self,
+        query: str,
+        exclude_allergens: list[Allergen] | None = None,
+        priority_mode: PriorityMode | None = None,
+    ) -> tuple[list[Product], list[Allergen]]:
+        """Return catalog matches blocked due to excluded company/request allergens when no allergen-safe option exists."""
+        self._check_agent_permission("kitchen", "search", "Searched catalog")
+        eligible, blocked, blocking_allergens = self._run_catalog_search(
+            query, priority_mode=priority_mode, extra_excluded=set(exclude_allergens or [])
+        )
+        if eligible:
+            return [], []
+        return blocked, blocking_allergens
+
+    def search_products(self, query: str, priority_mode: PriorityMode | None = None) -> list[Product]:
+        self._check_agent_permission("kitchen", "search", "Searched catalog")
+        active_priority = self._resolve_priority_mode(priority_mode, query)
+        eligible, _blocked, _blocking = self._run_catalog_search(query, priority_mode=active_priority)
+        self._record_event("kitchen", "Searched catalog", "completed", f"Query '{query}' ({active_priority}) · {len(eligible)} matches")
+        return eligible
 
     def check_availability(
         self, product_id: str, quantity: int, requested_date: date | None = None, customer: str | None = None,
@@ -1947,7 +2055,7 @@ class ValioClient:
             if not original.category and not self.supplier.explicit_substitutes(original.product_id):
                 return []
 
-            excluded = set(exclude_allergens)
+            excluded = self._effective_excluded_allergens(exclude_allergens)
             explicit_ids = set(self.supplier.explicit_substitutes(original.product_id))
 
             # Preserve critical dietary claims like lactose_free or gluten_free when substituting
@@ -2060,9 +2168,19 @@ class ValioClient:
         self._check_agent_permission("kitchen", "prepare", "Planned request")
         active_priority = self._resolve_priority_mode(priority_mode, query)
         delivery_date = requested_date or DEFAULT_MOCK_DELIVERY_DATE
-        excluded = set(exclude_allergens or [])
+        excluded = self._effective_excluded_allergens(exclude_allergens)
         matches = self.search_products(query, priority_mode=active_priority)
         if not matches:
+            blocked, blocked_allergens = (
+                self.blocked_allergen_matches(query, exclude_allergens=list(excluded), priority_mode=active_priority)
+                if "search_products" not in self.__dict__
+                else ([], [])
+            )
+            if blocked and blocked_allergens:
+                raise ProcurementError(
+                    f"Products matched '{query}', but all were excluded by your allergen rules "
+                    f"({', '.join(blocked_allergens)}). No order was placed.", 404,
+                )
             raise ProcurementError(
                 f"No catalog products matched '{query}'. Try a different product name "
                 "or check the requested dietary requirements.", 404,
@@ -2805,16 +2923,80 @@ class ValioClient:
             claims_tag = ", ".join(all_matches[0].dietary_claims or []) if all_matches and all_matches[0].dietary_claims else "standard"
             alg_tag = ", ".join(line.exclude_allergens) if line.exclude_allergens else "none"
             decision_trace.append(
-                f"1. Category & Dietary Filter: Routed '{line.query}' -> GS1 Cat {cat_code} · Matched {len(all_matches)} SKUs ({claims_tag}; excluded: {alg_tag})"
+                f"1. Category & Dietary Filter: Routed '{line.query}' -> GS1 Cat {cat_code} · Matched {len(all_matches)} safe SKUs ({claims_tag}; excluded: {alg_tag})"
             )
 
-            plan = self.plan_procurement(
-                line.query,
-                target_volume_liters_or_kg=line.target_volume_liters_or_kg,
-                requested_date=delivery_date,
-                exclude_allergens=line.exclude_allergens,
-                priority_mode=active_priority,
-            )
+            try:
+                plan = self.plan_procurement(
+                    line.query,
+                    target_volume_liters_or_kg=line.target_volume_liters_or_kg,
+                    requested_date=delivery_date,
+                    exclude_allergens=line.exclude_allergens,
+                    priority_mode=active_priority,
+                )
+            except ProcurementError as exc:
+                blocked_prods, blocking_alg = self.blocked_allergen_matches(
+                    line.query, exclude_allergens=line.exclude_allergens, priority_mode=active_priority
+                )
+                if exc.status == 404 and blocked_prods and blocking_alg:
+                    top_blocked = blocked_prods[:3]
+                    if self.supplier and any(p.product_id not in CATALOG for p in top_blocked):
+                        try:
+                            batch_avail, _ = self.supplier.check_batch_availability(
+                                [p.product_id for p in top_blocked if p.product_id not in CATALOG],
+                                quantity=1,
+                                requested_date=delivery_date,
+                            )
+                            enriched_blocked: list[Product] = []
+                            for bp in top_blocked:
+                                av = batch_avail.get(bp.product_id)
+                                if av:
+                                    enriched_blocked.append(
+                                        bp.model_copy(
+                                            update={
+                                                "unit_price_cents": av.unit_price_cents,
+                                                "comparison_price_cents": av.comparison_price_cents,
+                                                "comparison_unit": av.comparison_unit,
+                                                "stock": av.available_quantity,
+                                            }
+                                        )
+                                    )
+                                else:
+                                    enriched_blocked.append(bp)
+                            top_blocked = enriched_blocked
+                        except ProcurementError:
+                            pass
+                    reason_text = str(exc)
+                    alg_list = ", ".join(blocking_alg)
+                    rejection_trace = [
+                        f"1. Category & Dietary Filter: Searched '{line.query}' · Found {len(blocked_prods)} catalog matches, ALL automatically ignored due to company allergen rules ({alg_list}).",
+                        f"2. Priority Ranking: 0 allergen-safe products available without ({alg_list}).",
+                        "3. Pack Math & Live Stock: Skipped — no compliant allergen-free SKU available.",
+                        f"4. Guardrail & Quote Lock: REJECTED — Excluded allergen rule triggered ({alg_list}). No order placed.",
+                    ]
+                    self._record_event(
+                        agent.id,
+                        "Allergen exclusion rejection",
+                        "rejected",
+                        f"Rejected '{request.prompt}': all {len(blocked_prods)} matches contain excluded allergen(s): {alg_list}",
+                    )
+                    return AgentExecutionResult(
+                        prompt=request.prompt,
+                        agent=self.get_agent(agent.id),
+                        priority_mode=active_priority,
+                        requested_date=delivery_date,
+                        orchestrator_model=model_used,
+                        parsed_lines=parsed_lines,
+                        plans=[],
+                        proposed_order_lines=[],
+                        decision_trace=rejection_trace,
+                        order=None,
+                        rejected=True,
+                        rejection_reason=reason_text,
+                        rejected_products=top_blocked,
+                        summary=f"Rejected: {reason_text}",
+                    )
+                raise
             plans.append(plan)
             if not plan.options:
                 decision_trace.append(

@@ -37,6 +37,23 @@ def search_products(query: SearchTerm, priority_mode: PriorityMode | None = None
     return client.search_products(query, priority_mode=priority_mode)
 
 
+class BlockedAllergenMatches(BaseModel):
+    products: list[Product]
+    blocking_allergens: list[Allergen]
+
+
+@app.get("/api/blocked_allergen_matches")
+def blocked_allergen_matches(
+    query: SearchTerm,
+    exclude_allergens: Annotated[list[Allergen] | None, Query(max_length=6)] = None,
+    priority_mode: PriorityMode | None = None,
+) -> BlockedAllergenMatches:
+    products, blocking = client.blocked_allergen_matches(
+        query, exclude_allergens=exclude_allergens, priority_mode=priority_mode
+    )
+    return BlockedAllergenMatches(products=products[:3], blocking_allergens=blocking)
+
+
 @app.get("/api/check_availability")
 def check_availability(
     product_id: ProductId, quantity: Annotated[int, Query(ge=1, le=10000)] = 1,

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import {
-  AlertTriangle, ArrowDownUp, Award, CheckCircle2, ChevronDown,
+  AlertTriangle, ArrowDownUp, Award, Ban, CheckCircle2, ChevronDown,
   Filter, Leaf, Lock, MapPin, PackageCheck, ShieldAlert, ShieldCheck,
   Sparkles, Trophy, Truck,
 } from "lucide-react";
@@ -75,6 +75,9 @@ export default function DecisionFlowDiagram({
   const firstItem = activeOrder?.items?.[0];
   const chosenSkuId = firstItem?.product_id ?? bestOption?.product.product_id ?? null;
   const isSubstituted = Boolean(firstItem?.is_substitution || trace.some((s) => /Auto-Substitution/i.test(s)));
+  const isRejected = Boolean(execution?.rejected);
+  const rejectedProducts = execution?.rejected_products ?? [];
+  const excludedSet = new Set(parsedLine?.exclude_allergens ?? guardrails?.review_allergens ?? []);
   const priorityMode: PriorityMode = execution?.priority_mode ?? guardrails?.priority_mode ?? "balanced";
   const maxApproveCents = guardrails?.max_auto_approve_cents ?? 25000;
 
@@ -105,17 +108,21 @@ export default function DecisionFlowDiagram({
       ? `${(activeOrder.min_reliability * 100).toFixed(0)}% on-time`
       : PRIORITY_LABELS[priorityMode].split(" ")[0];
 
-  const step3Summary = firstItem
-    ? `${firstItem.quantity.toLocaleString("en-GB")} × ${firstItem.unit}`
-    : bestOption
-      ? `${bestOption.recommended_packs ?? 1} × ${bestOption.product.unit}`
-      : "Pack math verified";
-  const step3Badge = isSubstituted ? "Auto-Substituted" : "Stock Verified";
+  const step3Summary = isRejected
+    ? "Skipped — 0 allergen-safe SKUs"
+    : firstItem
+      ? `${firstItem.quantity.toLocaleString("en-GB")} × ${firstItem.unit}`
+      : bestOption
+        ? `${bestOption.recommended_packs ?? 1} × ${bestOption.product.unit}`
+        : "Pack math verified";
+  const step3Badge = isRejected ? "Ignored" : isSubstituted ? "Auto-Substituted" : "Stock Verified";
 
-  const step4Summary = activeOrder
-    ? `${activeOrder.id} · ${money(activeOrder.total_cents)}`
-    : "Prepared plan";
-  const step4Badge = activeOrder ? statusLabels[activeOrder.status] : "Quote ready";
+  const step4Summary = isRejected
+    ? "REJECTED · No order placed"
+    : activeOrder
+      ? `${activeOrder.id} · ${money(activeOrder.total_cents)}`
+      : "Prepared plan";
+  const step4Badge = isRejected ? "Rejected" : activeOrder ? statusLabels[activeOrder.status] : "Quote ready";
 
   return (
     <div className="decision-inline">
@@ -227,27 +234,27 @@ export default function DecisionFlowDiagram({
         </div>
 
         {/* Step 4 */}
-        <div className={`step-pill ${openSteps[4] ? "is-open" : ""} ${activeOrder?.status === "pending" ? "is-warning" : ""}`} role="listitem">
+        <div className={`step-pill ${openSteps[4] ? "is-open" : ""} ${isRejected || activeOrder?.status === "pending" ? "is-warning" : ""}`} role="listitem">
           <button
             type="button"
             className="step-pill-trigger"
             onClick={() => toggle(4)}
             aria-expanded={Boolean(openSteps[4])}
           >
-            <span className={`step-pill-icon ${activeOrder?.status === "pending" ? "orange" : "navy"}`}>
-              {activeOrder?.status === "pending" ? <ShieldAlert size={13} /> : <Lock size={13} />}
+            <span className={`step-pill-icon ${isRejected || activeOrder?.status === "pending" ? "orange" : "navy"}`}>
+              {isRejected ? <Ban size={13} /> : activeOrder?.status === "pending" ? <ShieldAlert size={13} /> : <Lock size={13} />}
             </span>
             <span className="step-pill-title">Step 4 · Guardrails &amp; Quote Lock</span>
             <span className="step-pill-summary">{step4Summary}</span>
-            <code className={`step-pill-code ${activeOrder?.status === "pending" ? "warn" : "ok"}`}>{step4Badge}</code>
+            <code className={`step-pill-code ${isRejected || activeOrder?.status === "pending" ? "warn" : "ok"}`}>{step4Badge}</code>
             <ChevronDown size={14} className="step-pill-chevron" />
           </button>
           <div className="step-dropdown" aria-hidden={!openSteps[4]}>
             <div className="step-dropdown-inner">
               <div className="step-console-grid">
                 <div><span>Auto-approve limit</span><code>{money(maxApproveCents)}</code></div>
-                <div><span>Order total</span><code>{activeOrder ? money(activeOrder.total_cents) : "N/A"}</code></div>
-                <div><span>Restricted allergens</span><code>{(guardrails?.review_allergens ?? []).join(", ") || "None"}</code></div>
+                <div><span>Order total</span><code>{isRejected ? "€0.00 (Rejected)" : activeOrder ? money(activeOrder.total_cents) : "N/A"}</code></div>
+                <div><span>Excluded allergens</span><code>{Array.from(excludedSet).join(", ") || "None"}</code></div>
                 <div><span>Trust protocol</span><code>{tv?.protocol ?? "keittio-valio-trust-v1"}</code></div>
                 {tv?.quote_lock_id && <div><span>Quote lock ID</span><code>{tv.quote_lock_id}</code></div>}
                 {tv?.signature_hmac_sha256 && (
@@ -263,6 +270,108 @@ export default function DecisionFlowDiagram({
           </div>
         </div>
       </div>
+
+      {/* 2B. Rejected Allergen Candidates (shown with images when 0 safe matches exist) */}
+      {isRejected && (
+        <>
+          {rejectedProducts.length > 0 && (
+            <section className="choices-section choices-rejected" aria-label="Catalog matches rejected by allergen exclusions">
+              <div className="choices-header">
+                <span className="choices-eyebrow"><Ban size={13} /> Matched catalog items ignored ({rejectedProducts.length})</span>
+                <span className="choice-rejected-pill">Contains excluded allergen</span>
+              </div>
+              <div className="choices-list">
+                {rejectedProducts.slice(0, 3).map((p, idx) => {
+                  const compPrice = formatComparisonPrice(p, parsedLine?.unit_hint);
+                  const { certificates, co2Range } = splitCertificatesAndCo2Range(p.sustainability_labels);
+                  const matchingExcluded = (p.allergens ?? []).filter((a) => excludedSet.has(a));
+                  return (
+                    <article key={p.product_id} className="choice-row is-rejected">
+                      <div className="choice-media">
+                        <ProductThumbnail
+                          productId={p.product_id}
+                          query={p.name_fi || p.name}
+                          alt={p.name}
+                        />
+                      </div>
+                      <div className="choice-content">
+                        <div className="choice-title-line">
+                          <h4>{idx + 1}. {p.name}</h4>
+                          <code className="choice-sku-code">SKU {p.product_id}</code>
+                          <span className="choice-rejected-pill">
+                            <Ban size={11} /> Ignored · Contains {(matchingExcluded.length ? matchingExcluded : (p.allergens ?? [])).join(", ")}
+                          </span>
+                        </div>
+                        {(p.name_fi || p.vendor) && (
+                          <p className="choice-subline">
+                            {p.name_fi && p.name_fi !== p.name ? <span>{p.name_fi}</span> : null}
+                            {p.name_fi && p.name_fi !== p.name && p.vendor ? " · " : null}
+                            {p.vendor ? <span>{p.vendor}</span> : null}
+                          </p>
+                        )}
+                        <div className="choice-pricing-row">
+                          <div className="choice-metric-box">
+                            <span className="metric-lbl">Pack price</span>
+                            <strong>{p.unit_price_cents != null ? money(p.unit_price_cents) : "N/A"} <small>/ {p.unit}</small></strong>
+                          </div>
+                          {compPrice && (
+                            <div className="choice-metric-box">
+                              <span className="metric-lbl">Comparison price</span>
+                              <strong>{compPrice}</strong>
+                            </div>
+                          )}
+                        </div>
+                        <div className="choice-attributes">
+                          <span className="attr-pill origin">
+                            <MapPin size={12} /> <strong>Origin:</strong> {p.country_of_origin ? p.country_of_origin.toUpperCase() : "N/A"}
+                          </span>
+                          <span className="attr-pill carbon">
+                            <Leaf size={12} /> <strong>Carbon:</strong> {p.carbon_footprint_kg != null ? `${p.carbon_footprint_kg.toFixed(2)} kg CO₂e/kg` : "Cat median"}
+                            {co2Range ? ` (${co2Range})` : ""}
+                          </span>
+                          <span className="attr-pill allergen-hit">
+                            <ShieldAlert size={12} /> <strong>Allergens:</strong> {(p.allergens ?? []).join(", ") || "Listed"}
+                          </span>
+                        </div>
+                        {certificates.length > 0 && (
+                          <div className="choice-certs-row">
+                            <span className="cert-lbl"><Award size={12} /> Certificates:</span>
+                            <div className="cert-tags">
+                              {certificates.map((cert) => <span key={cert} className="cert-tag">{cert}</span>)}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          <section className="outcome-banner is-rejected" role="alert" aria-label="Request rejected due to allergen exclusions">
+            <div className="outcome-top">
+              <div className="outcome-title-wrap">
+                <span className="outcome-badge rejected"><Ban size={14} /> Rejected</span>
+                <h3>No Allergen-Safe Match Found</h3>
+              </div>
+              <div className="outcome-total">
+                <span>Excluded allergens</span>
+                <strong style={{ fontSize: 16 }}>{Array.from(excludedSet).join(", ") || "Strict rule"}</strong>
+              </div>
+            </div>
+            <div className="outcome-why-rejected">
+              <div className="why-pending-heading">
+                <ShieldAlert size={20} />
+                <h4>Rejected Automatically — Zero Products Without Excluded Allergens</h4>
+              </div>
+              <p className="why-rejected-text">
+                {execution?.rejection_reason ?? `Every matching catalog item contains an excluded company allergen (${Array.from(excludedSet).join(", ")}). Products containing excluded allergens are automatically ignored as highest priority, so no order was placed.`}
+              </p>
+            </div>
+          </section>
+        </>
+      )}
 
       {/* 2. Top 3 Choices Compared (ChatGPT horizontal card layout with left thumbnail) */}
       {options.length > 0 && (

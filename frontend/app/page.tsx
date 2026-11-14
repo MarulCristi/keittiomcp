@@ -14,7 +14,7 @@ import DecisionFlowDiagram from "./components/decision-flow-diagram";
 import WebImageReferences from "./components/web-image-references";
 import { AgentIcon, CartIcon, ApprovalIcon, ApprovedIcon } from "./components/dashboard-icons";
 import { createBrowserPreview, type ActivityEvent, type Agent } from "./lib/browser-preview";
-import { api, errorMessage, money, orderRequester, sampleProducts, statusLabels, type AgentExecutionResult, type Availability, type Guardrails, type Order, type PriorityMode, type Product } from "./lib/purchasing";
+import { api, errorMessage, money, orderRequester, sampleProducts, statusLabels, type AgentExecutionResult, type Allergen, type Availability, type BlockedAllergenMatches, type Guardrails, type Order, type PriorityMode, type Product } from "./lib/purchasing";
 
 const allergens = [
   { name: "milk", label: "Milk", Icon: Milk },
@@ -155,6 +155,27 @@ export default function Dashboard() {
     void refreshSideData();
   }
 
+  async function toggleCompanyAllergen(name: Allergen) {
+    if (!workspace || activeAction || sending) return;
+    const current = workspace.guardrails.review_allergens;
+    const nextAllergens = current.includes(name)
+      ? current.filter((item) => item !== name)
+      : [...current, name];
+    const nextGuardrails: Guardrails = { ...workspace.guardrails, review_allergens: nextAllergens };
+    setWorkspace((previous) => previous && { ...previous, guardrails: nextGuardrails });
+    setDraft((previous) => (previous ? { ...previous, review_allergens: nextAllergens } : nextGuardrails));
+    setActionError("");
+    try {
+      const saved = await request<Guardrails>("guardrails", "PUT", nextGuardrails);
+      setWorkspace((previous) => previous && { ...previous, guardrails: saved });
+      setDraft(saved);
+    } catch (error) {
+      setWorkspace((previous) => previous && { ...previous, guardrails: { ...workspace.guardrails, review_allergens: current } });
+      setDraft((previous) => (previous ? { ...previous, review_allergens: current } : workspace.guardrails));
+      setActionError(errorMessage(error));
+    }
+  }
+
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!draft || activeAction) return;
@@ -210,15 +231,18 @@ export default function Dashboard() {
         prompt: cleanPrompt || promptText,
         agent_id: "kitchen",
         priority_mode: inferredPriority,
+        exclude_allergens: workspace?.guardrails.review_allergens ?? [],
         auto_place_order: true,
         simulate_shortage_on_primary: simulateShortage,
       });
       if (result.order) updateOrder(result.order);
       else void refreshSideData();
       return {
-        headline: result.order
-          ? `Order ${result.order.id} — ${statusLabels[result.order.status]}`
-          : "Procurement Plan Prepared",
+        headline: result.rejected
+          ? "Request Rejected — Excluded Allergen Match"
+          : result.order
+            ? `Order ${result.order.id} — ${statusLabels[result.order.status]}`
+            : "Procurement Plan Prepared",
         text: result.summary,
         execution: result,
         thinking: result.decision_trace,
@@ -285,6 +309,45 @@ export default function Dashboard() {
     if (workspace?.guardrails.priority_mode) searchParams.set("priority_mode", workspace.guardrails.priority_mode);
     const products = await request<Product[]>(`search_products?${searchParams}`);
     void refreshSideData();
+    if (products.length === 0 && (workspace?.guardrails.review_allergens.length ?? 0) > 0) {
+      const blockedParams = new URLSearchParams({ query });
+      for (const alg of workspace?.guardrails.review_allergens ?? []) blockedParams.append("exclude_allergens", alg);
+      if (workspace?.guardrails.priority_mode) blockedParams.set("priority_mode", workspace.guardrails.priority_mode);
+      try {
+        const blocked = await request<BlockedAllergenMatches>(`blocked_allergen_matches?${blockedParams}`);
+        if (blocked.products.length > 0 && blocked.blocking_allergens.length > 0) {
+          const algList = blocked.blocking_allergens.join(", ");
+          const reason = `Products matched '${query}', but all were excluded by your allergen rules (${algList}). No order was placed.`;
+          const trace = [
+            `1. Category & Dietary Filter: Searched '${query}' · All catalog matches contain excluded company allergen(s): ${algList}.`,
+            `2. Priority Ranking: 0 allergen-safe products available without (${algList}).`,
+            "3. Pack Math & Live Stock: Skipped — no compliant SKU available.",
+            `4. Guardrail & Quote Lock: REJECTED — ${reason}`,
+          ];
+          return {
+            headline: "Request Rejected — Excluded Allergen Match",
+            text: reason,
+            thinking: trace,
+            execution: {
+              prompt: text,
+              requested_date: days.format(new Date()),
+              priority_mode: workspace?.guardrails.priority_mode ?? "balanced",
+              orchestrator_model: "strict-allergen-filter",
+              parsed_lines: [{ query, target_volume_liters_or_kg: 1, unit_hint: "L/kg", exclude_allergens: workspace?.guardrails.review_allergens ?? [] }],
+              plans: [],
+              order: null,
+              rejected: true,
+              rejection_reason: reason,
+              rejected_products: blocked.products,
+              decision_trace: trace,
+              summary: `Rejected: ${reason}`,
+            },
+          };
+        }
+      } catch {
+        /* Fallback to standard empty search message */
+      }
+    }
     const topMatch = products[0];
     const nextStep = "Select a product to choose a quantity and review price and availability.";
     return {
@@ -526,6 +589,40 @@ export default function Dashboard() {
               <span className="supplier-label">{preview ? "Sample catalog" : "Valio Aimo catalog"}</span>
             </div>
 
+            {workspace && (
+              <div className="allergen-quickbar" role="region" aria-label="Company allergen exclusions">
+                <div className="allergen-quickbar-head">
+                  <strong><ShieldCheck size={14} /> Company excluded allergens (high priority)</strong>
+                  <span className={`allergen-count-badge ${workspace.guardrails.review_allergens.length > 0 ? "active" : ""}`}>
+                    {workspace.guardrails.review_allergens.length > 0
+                      ? `${workspace.guardrails.review_allergens.length} excluded`
+                      : "None excluded"}
+                  </span>
+                </div>
+                <div className="allergen-quick-chips">
+                  {allergens.map(({ name, label, Icon }) => {
+                    const active = workspace.guardrails.review_allergens.includes(name);
+                    return (
+                      <button
+                        key={name}
+                        type="button"
+                        aria-pressed={active}
+                        disabled={Boolean(activeAction) || sending}
+                        className={`allergen-chip ${active ? "is-excluded" : ""}`}
+                        onClick={() => void toggleCompanyAllergen(name)}
+                      >
+                        <Icon size={13} />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="allergen-quickbar-note">
+                  Any product containing a checked allergen as an ingredient is automatically ignored. Requests with no allergen-safe match are rejected.
+                </p>
+              </div>
+            )}
+
             <div className="chat-content" role="log" aria-label="Conversation">
               <div className="message">
                 <div className="message-icon"><Sparkles size={16} /></div>
@@ -692,7 +789,7 @@ export default function Dashboard() {
                     Require human approval for substitutions
                   </label>}
                   <fieldset className="allergens" disabled={Boolean(activeAction)}>
-                    <legend>Require approval for</legend>
+                    <legend>Excluded company allergens (strict ignore)</legend>
                     <div className="allergen-options">
                       {allergens.map(({ name, label, Icon }) => (
                         <label key={name}>
