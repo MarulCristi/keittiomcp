@@ -383,10 +383,21 @@ export default function Dashboard() {
         <div className="activity-details">
           <p>{describeOrder(order)}</p>
           {order.reasons.length > 0 && <ul>{order.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
-          {order.decision_trace && order.decision_trace.length > 0 && <div style={{ marginTop: 10 }}>
-            <button type="button" className="bubble-flow-btn" onClick={() => { setActiveFlow({ order }); setView("overview"); }}>
-              <ArrowDownUp size={13} /> Inspect selection flow diagram
-            </button>
+          {order.decision_trace && order.decision_trace.length > 0 && <div className="algorithm-steps-container" style={{ marginTop: 10 }}>
+            <div className="algorithm-steps-header"><span>Algorithm thinking steps (click to expand)</span></div>
+            {order.decision_trace.map((step, index) => {
+              const [head, ...rest] = step.split(":");
+              const body = rest.join(":").trim();
+              return (
+                <details key={index} className="algo-step-dropdown">
+                  <summary>
+                    <span className="algo-step-num sky">Step {index + 1}</span>
+                    <span className="algo-step-title">{head.replace(/^\d+\.\s*/, "")}</span>
+                  </summary>
+                  <div className="algo-step-body"><p><code>{body || step}</code></p></div>
+                </details>
+              );
+            })}
           </div>}
           {(preview || Boolean(workspace)) && events.some((event) => event.order_id === order.id) && <div className="order-timeline">
             <h3>Order history</h3>
@@ -568,28 +579,35 @@ export default function Dashboard() {
                   <div className="message-body">
                     <span className="message-author">{message.role === "user" ? "You" : "Purchasing assistant"}</span>
                     <div className="bubble markdown-bubble">
-                      {message.headline && <strong style={{ display: "block", marginBottom: 4 }}>{message.headline}</strong>}
-                      {message.bullets && message.bullets.length > 0 ? (
-                        <ul>
-                          {message.bullets.map((b, bIdx) => (
-                            <li key={bIdx}>
-                              <strong>{b.label}:</strong> {b.code && <><code>{b.code}</code> </>}{b.value}
-                            </li>
-                          ))}
-                        </ul>
+                      {message.execution ? (
+                        <DecisionFlowDiagram
+                          execution={message.execution}
+                          order={message.execution.order}
+                          guardrails={workspace?.guardrails ?? null}
+                          onOpenApprovals={() => setView("approvals")}
+                        />
                       ) : (
-                        <p style={{ margin: 0, color: "var(--ink)" }}>{message.text}</p>
-                      )}
-                      {(message.execution || (message.thinking && message.thinking.length > 0)) && (
-                        <div>
-                          <button
-                            type="button"
-                            className="bubble-flow-btn"
-                            onClick={() => setActiveFlow({ execution: message.execution ?? null, order: message.execution?.order ?? null })}
-                          >
-                            <ArrowDownUp size={13} /> Inspect selection flow diagram →
-                          </button>
-                        </div>
+                        <>
+                          <p style={{ margin: 0, color: "var(--ink)" }}>{message.text}</p>
+                          {message.thinking && message.thinking.length > 0 && (
+                            <div className="algorithm-steps-container" style={{ marginTop: 10 }}>
+                              <div className="algorithm-steps-header"><span>Algorithm thinking steps (click to expand)</span></div>
+                              {message.thinking.map((step, sIdx) => {
+                                const [head, ...rest] = step.split(":");
+                                const body = rest.join(":").trim();
+                                return (
+                                  <details key={sIdx} className="algo-step-dropdown">
+                                    <summary>
+                                      <span className="algo-step-num sky">Step {sIdx + 1}</span>
+                                      <span className="algo-step-title">{head.replace(/^\d+\.\s*/, "")}</span>
+                                    </summary>
+                                    <div className="algo-step-body"><p><code>{body || step}</code></p></div>
+                                  </details>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                     {message.products && productCards(message.products, Boolean(message.sample), message.substitutedFor, message.requestedDate, message.requestedQuantity)}
@@ -610,7 +628,7 @@ export default function Dashboard() {
                     {thinkingStage === 3 && "Step 3/4 · Calculating pack math & live Valio stock…"}
                     {thinkingStage >= 4 && "Step 4/4 · Verifying €250 guardrail & HMAC quote lock…"}
                   </strong>
-                  <small>Updating the selection flow diagram on the right…</small>
+                  <small>Running autonomous selection & guardrail verification…</small>
                 </div>
               ) : null}
               <div ref={chatEnd} />
@@ -640,15 +658,6 @@ export default function Dashboard() {
           </section>}
 
           <aside className="right-panel" aria-label="Purchasing controls">
-            {view === "overview" && activeFlow && (
-              <DecisionFlowDiagram
-                execution={activeFlow.execution}
-                order={activeFlow.order}
-                guardrails={workspace?.guardrails ?? null}
-                onClose={() => setActiveFlow(null)}
-                onOpenApprovals={() => setView("approvals")}
-              />
-            )}
             <div ref={reviewAnchor} tabIndex={-1} className="review-anchor" hidden={!selection && view === "overview"}>
               {selection ? <OrderReview key={`${selection.sample}:${selection.product.product_id}:${selection.quantity}:${selection.date}:${selection.substitutedFor}`} product={selection.product} sample={selection.sample}
                 request={request} preview={preview}

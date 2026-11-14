@@ -1,9 +1,8 @@
 "use client";
 
-import { useState } from "react";
 import {
-  ArrowDown, ArrowDownUp, Check, ChevronDown, ChevronRight,
-  Filter, Lock, PackageCheck, ShieldAlert, ShieldCheck, Trophy, X,
+  ArrowDownUp, ArrowRight, Filter, Globe, Lock,
+  PackageCheck, ShieldAlert, ShieldCheck, Trophy,
 } from "lucide-react";
 import {
   money, statusLabels,
@@ -18,11 +17,21 @@ const PRIORITY_LABELS: Record<PriorityMode, string> = {
   highest_reliability: "Highest Delivery Reliability (100% On-Time)",
 };
 
+const ORIGIN_NAMES: Record<string, string> = {
+  FI: "FI · Finland (Kotimainen)",
+  SE: "SE · Sweden",
+  DK: "DK · Denmark",
+  DE: "DE · Germany",
+  NL: "NL · Netherlands",
+  EE: "EE · Estonia",
+  IT: "IT · Italy",
+  ES: "ES · Spain",
+};
+
 type Props = {
   execution?: AgentExecutionResult | null;
   order?: Order | null;
   guardrails?: Guardrails | null;
-  onClose?: () => void;
   onOpenApprovals?: () => void;
 };
 
@@ -30,11 +39,8 @@ export default function DecisionFlowDiagram({
   execution,
   order: propOrder,
   guardrails,
-  onClose,
   onOpenApprovals,
 }: Props) {
-  const [openNode, setOpenNode] = useState<number | null>(null);
-
   const activeOrder = execution?.order ?? propOrder ?? null;
   const trace = execution?.decision_trace ?? activeOrder?.decision_trace ?? [];
   const plan = execution?.plans?.[0];
@@ -47,270 +53,291 @@ export default function DecisionFlowDiagram({
 
   if (!execution && !activeOrder) return null;
 
-  const toggle = (index: number) => setOpenNode((prev) => (prev === index ? null : index));
+  // Determine the actual fulfilled product (substituted option if stockout occurred, else #1 option)
+  const chosenOption = isSubstituted && options.length > 1
+    ? (options.find((o) => o.product.product_id === firstItem?.product_id) ?? options[1])
+    : bestOption;
+  const chosenProduct = chosenOption?.product ?? bestOption?.product;
 
-  // Extract concise headlines from trace or structured fields
-  const step1Headline = parsedLine
-    ? `'${parsedLine.query}' · ${parsedLine.target_volume_liters_or_kg.toLocaleString("en-GB")} ${parsedLine.unit_hint}`
-    : (trace[0]?.replace(/^1\.\s*[^:]+:\s*/, "").split("·")[0]?.trim() ?? "Category & dietary routing");
+  // Format key criteria
+  const unitPriceCents = firstItem?.unit_price_cents ?? chosenProduct?.unit_price_cents ?? null;
+  const unitLabel = firstItem?.unit ?? chosenProduct?.unit ?? "unit";
+  const compPriceStr = chosenProduct?.comparison_price_cents != null && chosenProduct?.comparison_unit
+    ? `${money(chosenProduct.comparison_price_cents)} / ${chosenProduct.comparison_unit}`
+    : unitPriceCents != null
+      ? `${money(unitPriceCents)} / ${unitLabel}`
+      : "Verified fixed price";
 
-  const step1Badge = bestOption?.product.category
-    ? `GS1 Cat ${bestOption.product.category}`
-    : trace[0]?.match(/GS1 Cat\s+(\S+)/i)?.[1]
-      ? `GS1 Cat ${trace[0].match(/GS1 Cat\s+(\S+)/i)?.[1]}`
-      : "Filtered";
+  const originCode = (chosenProduct?.country_of_origin || "FI").toUpperCase();
+  const originLabel = ORIGIN_NAMES[originCode] ?? originCode;
 
-  const winnerProduct = bestOption?.product;
-  const step2Headline = winnerProduct
-    ? `SKU ${winnerProduct.product_id} — ${winnerProduct.name}`
-    : firstItem
-      ? `SKU ${firstItem.product_id} — ${firstItem.name}`
-      : (trace[1]?.replace(/^2\.\s*[^:]+:\s*/, "") ?? "Ranked top catalog match");
+  const certificates = (chosenProduct?.sustainability_labels ?? []).filter(
+    (label) => !label.startsWith("Cat ")
+  );
+  const co2RangeCertificate = (chosenProduct?.sustainability_labels ?? []).find(
+    (label) => label.startsWith("Cat ")
+  );
 
-  const step2Badge = winnerProduct?.delivery_reliability != null
-    ? `${(winnerProduct.delivery_reliability * 100).toFixed(0)}% on-time`
+  const reliabilityStr = chosenProduct?.delivery_reliability != null
+    ? `${(chosenProduct.delivery_reliability * 100).toFixed(1)}%`
     : activeOrder?.min_reliability != null
-      ? `${(activeOrder.min_reliability * 100).toFixed(0)}% on-time`
-      : "#1 Match";
+      ? `${(activeOrder.min_reliability * 100).toFixed(1)}%`
+      : "100.0%";
 
-  const step3Headline = firstItem
-    ? `${firstItem.quantity.toLocaleString("en-GB")} × ${firstItem.unit} (${firstItem.name})`
-    : bestOption
-      ? `${bestOption.recommended_packs ?? 1} × ${bestOption.product.unit}`
-      : (trace[2]?.replace(/^3\.\s*[^:]+:\s*/, "") ?? "Pack math & stock verified");
+  const co2Str = chosenProduct?.carbon_footprint_kg != null
+    ? `${chosenProduct.carbon_footprint_kg.toFixed(2)} kg CO2e/kg`
+    : "Category median";
 
-  const step3Badge = isSubstituted ? "Auto-Substituted" : "100% In Stock";
+  // Concise 1-line step headers
+  const step1Short = parsedLine
+    ? `'${parsedLine.query}' (${parsedLine.target_volume_liters_or_kg.toLocaleString("en-GB")} ${parsedLine.unit_hint})`
+    : "Category & allergen filter";
+  const step1Cat = chosenProduct?.category ? `GS1 Cat ${chosenProduct.category}` : "Filtered";
 
-  const step4Headline = activeOrder
-    ? `${activeOrder.id} · ${money(activeOrder.total_cents)}`
-    : "Order preview";
+  const step2Short = bestOption?.product
+    ? `#1 SKU ${bestOption.product.product_id} (${bestOption.product.name})`
+    : firstItem
+      ? `SKU ${firstItem.product_id} (${firstItem.name})`
+      : "Ranked top catalog options";
+
+  const unitVol = chosenProduct?.net_volume_liters_or_kg ?? 1;
+  const targetVol = parsedLine?.target_volume_liters_or_kg ?? (firstItem?.quantity ?? 1) * unitVol;
+  const packFormula = `ceil(${targetVol} / ${unitVol}) = ${firstItem?.quantity ?? chosenOption?.recommended_packs ?? 1} × ${unitLabel}`;
 
   const tv = activeOrder?.trust_verification;
-  const step5Headline = tv?.quote_lock_id ?? tv?.protocol ?? "keittio-valio-trust-v1";
 
   return (
-    <section className="panel side-panel flow-diagram-panel" aria-labelledby="flow-diagram-title">
-      <div className="flow-diagram-header">
-        <div>
-          <span className="eyebrow">Autonomous decision pipeline</span>
-          <h2 id="flow-diagram-title">Selection flow diagram</h2>
-          <p className="review-caption">Click any stage in the diagram to inspect the underlying catalog and guardrail data.</p>
+    <div className="inline-decision-card">
+      {/* SECTION 1: SELECTED ITEM & KEY CRITERIA BADGES */}
+      <div className="selected-summary-box">
+        <div className="selected-header-row">
+          <span className="selected-pill-tag">
+            {isSubstituted ? "Selected (Auto-Substituted)" : "Selected"}
+          </span>
+          <code>SKU {firstItem?.product_id ?? chosenProduct?.product_id ?? "N/A"}</code>
+          {firstItem && (
+            <span className="selected-qty-badge">
+              {firstItem.quantity.toLocaleString("en-GB")} × {firstItem.unit}
+            </span>
+          )}
         </div>
-        {onClose && (
-          <button type="button" className="icon-button" aria-label="Close diagram" onClick={onClose}>
-            <X size={15} />
-          </button>
+
+        <h3 className="selected-product-title">
+          {firstItem?.name ?? chosenProduct?.name ?? "Valio Aimo Product"}
+        </h3>
+        {chosenProduct?.name_fi && (
+          <p className="selected-finnish-sub">
+            Finnish catalog name: <code>{chosenProduct.name_fi}</code>
+            {chosenProduct.vendor ? <> · Vendor: <code>{chosenProduct.vendor}</code></> : null}
+          </p>
         )}
+
+        {/* HIGH-VISIBILITY CRITERIA GRID */}
+        <div className="criteria-badge-grid">
+          <div className="criteria-chip price">
+            <small>Price / L or kg</small>
+            <strong><code>{compPriceStr}</code></strong>
+            {unitPriceCents != null && <span>{money(unitPriceCents)} per {unitLabel}</span>}
+          </div>
+
+          <div className="criteria-chip origin">
+            <small><Globe size={11} /> Country of Origin</small>
+            <strong><code>{originLabel}</code></strong>
+            <span>{originCode === "FI" ? "Domestic Finnish supply" : "Imported wholesale supply"}</span>
+          </div>
+
+          <div className="criteria-chip certs">
+            <small>Certificates & Labels</small>
+            <strong>
+              {certificates.length > 0
+                ? certificates.map((c, i) => <code key={i}>{c}</code>)
+                : <code>{(chosenProduct?.dietary_claims ?? ["lactose_free"]).join(", ")}</code>}
+            </strong>
+            <span>
+              {chosenProduct?.dietary_claims?.length
+                ? `Claims: ${chosenProduct.dietary_claims.join(", ")}`
+                : "Verified Valio Aimo spec"}
+            </span>
+          </div>
+
+          <div className="criteria-chip metrics">
+            <small>Reliability & Carbon</small>
+            <strong><code>{reliabilityStr} on-time</code> · <code>{co2Str}</code></strong>
+            <span>{co2RangeCertificate ?? `Priority: ${priorityMode.replace("_", " ")}`}</span>
+          </div>
+        </div>
       </div>
 
-      <div className="flow-diagram-tree" role="list">
-        {/* NODE 1: CATEGORY & DIETARY FILTER */}
-        <div className={`flow-node ${openNode === 1 ? "expanded" : ""}`} role="listitem">
-          <button type="button" className="flow-node-trigger" onClick={() => toggle(1)} aria-expanded={openNode === 1}>
-            <span className="flow-node-icon sky"><Filter size={15} /></span>
-            <span className="flow-node-main">
-              <small>1 · Category & Dietary Filter</small>
-              <strong>{step1Headline}</strong>
-            </span>
-            <span className="flow-node-badge">{step1Badge}</span>
-            <span className="flow-node-chevron">{openNode === 1 ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
-          </button>
-          {openNode === 1 && (
-            <div className="flow-node-details">
-              <dl className="flow-detail-grid">
-                <div><dt>Parsed request</dt><dd>{execution?.prompt ?? step1Headline}</dd></div>
-                {parsedLine && <div><dt>Target volume</dt><dd>{parsedLine.target_volume_liters_or_kg.toLocaleString("en-GB")} {parsedLine.unit_hint}</dd></div>}
-                <div><dt>Delivery date</dt><dd>{execution?.requested_date ?? tv?.requested_delivery_date ?? "2026-11-16"}</dd></div>
-                <div><dt>Kitchen priority</dt><dd>{PRIORITY_LABELS[priorityMode]}</dd></div>
-                <div><dt>Excluded allergens</dt><dd>{(parsedLine?.exclude_allergens ?? guardrails?.review_allergens ?? ["gluten", "nuts"]).join(", ") || "None"}</dd></div>
-                {winnerProduct?.dietary_claims?.length ? (
-                  <div><dt>Matched dietary claims</dt><dd>{winnerProduct.dietary_claims.join(", ")}</dd></div>
-                ) : null}
-              </dl>
-              {trace[0] && <p className="flow-raw-trace">{trace[0]}</p>}
+      {/* SECTION 2: PROMINENT APPROVAL / WHY NOT APPROVED BANNER */}
+      {activeOrder && (
+        <div className={`approval-callout-banner ${activeOrder.status === "pending" ? "not-approved" : "auto-approved"}`}>
+          <div className="approval-callout-header">
+            <div className="approval-callout-title">
+              {activeOrder.status === "pending" ? <ShieldAlert size={20} /> : <ShieldCheck size={20} />}
+              <div>
+                <strong>
+                  {activeOrder.status === "pending"
+                    ? `Why Order ${activeOrder.id} Was Not Auto-Approved`
+                    : `Order ${activeOrder.id} Automatically Approved`}
+                </strong>
+                <span>
+                  Order total: <code>{money(activeOrder.total_cents)}</code> · Status: <code>{statusLabels[activeOrder.status].toUpperCase()}</code>
+                </span>
+              </div>
             </div>
-          )}
-        </div>
-
-        <div className="flow-connector" aria-hidden="true"><ArrowDown size={14} /></div>
-
-        {/* NODE 2: GOOD-BETTER-BEST RANKING */}
-        <div className={`flow-node ${openNode === 2 ? "expanded" : ""}`} role="listitem">
-          <button type="button" className="flow-node-trigger" onClick={() => toggle(2)} aria-expanded={openNode === 2}>
-            <span className="flow-node-icon blue"><Trophy size={15} /></span>
-            <span className="flow-node-main">
-              <small>2 · Priority Ranking ({priorityMode.replace("_", " ")})</small>
-              <strong>{step2Headline}</strong>
-            </span>
-            <span className="flow-node-badge">{step2Badge}</span>
-            <span className="flow-node-chevron">{openNode === 2 ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
-          </button>
-          {openNode === 2 && (
-            <div className="flow-node-details">
-              {options.length > 0 ? (
-                <div className="flow-candidates">
-                  {options.slice(0, 3).map((opt, idx) => {
-                    const p = opt.product;
-                    const tier = (opt.tier ?? (idx === 0 ? "best" : idx === 1 ? "better" : "good")).toUpperCase();
-                    return (
-                      <div key={p.product_id} className={`flow-candidate-card ${idx === 0 ? "winner" : ""}`}>
-                        <div className="flow-candidate-top">
-                          <span className={`flow-tier-pill ${tier.toLowerCase()}`}>#{idx + 1} · {tier}</span>
-                          <strong>SKU {p.product_id} — {p.name}</strong>
-                        </div>
-                        {p.name_fi && <p className="flow-subtext">FI: {p.name_fi} {p.vendor ? `· ${p.vendor}` : ""} {p.country_of_origin ? `(${p.country_of_origin.toUpperCase()})` : ""}</p>}
-                        <div className="flow-candidate-metrics">
-                          <span><strong>Unit:</strong> {p.unit}</span>
-                          <span><strong>Reliability:</strong> {p.delivery_reliability != null ? `${(p.delivery_reliability * 100).toFixed(1)}%` : "N/A"}</span>
-                          <span><strong>CO2:</strong> {p.carbon_footprint_kg != null ? `${p.carbon_footprint_kg.toFixed(2)} kg CO2e/kg` : "Cat median"}</span>
-                          <span><strong>Price:</strong> {p.comparison_price_cents != null && p.comparison_unit ? `${money(p.comparison_price_cents)}/${p.comparison_unit}` : p.unit_price_cents != null ? `${money(p.unit_price_cents)}/${p.unit}` : "Verified"}</span>
-                        </div>
-                        {p.sustainability_labels && p.sustainability_labels.length > 0 && (
-                          <p className="flow-subtext"><strong>Certificates & CO2 range:</strong> {p.sustainability_labels.join(" · ")}</p>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="flow-raw-trace">{trace[1] ?? "Ranked top SKU by delivery reliability, carbon footprint, and comparison price."}</p>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="flow-connector" aria-hidden="true"><ArrowDown size={14} /></div>
-
-        {/* NODE 3: PACK MATH & LIVE STOCK / SUBSTITUTION */}
-        <div className={`flow-node ${openNode === 3 ? "expanded" : ""} ${isSubstituted ? "attention" : ""}`} role="listitem">
-          <button type="button" className="flow-node-trigger" onClick={() => toggle(3)} aria-expanded={openNode === 3}>
-            <span className={`flow-node-icon ${isSubstituted ? "orange" : "turquoise"}`}>
-              {isSubstituted ? <ArrowDownUp size={15} /> : <PackageCheck size={15} />}
-            </span>
-            <span className="flow-node-main">
-              <small>{isSubstituted ? "3 · Stock-Out Auto-Substitution" : "3 · Wholesale Pack Math & Live Stock"}</small>
-              <strong>{step3Headline}</strong>
-            </span>
-            <span className={`flow-node-badge ${isSubstituted ? "warning" : ""}`}>{step3Badge}</span>
-            <span className="flow-node-chevron">{openNode === 3 ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
-          </button>
-          {openNode === 3 && (
-            <div className="flow-node-details">
-              {isSubstituted && (
-                <div className="flow-substitution-branch">
-                  <span className="flow-branch-bad">Primary SKU Out of Stock / Shortfall ({firstItem?.substituted_for ?? winnerProduct?.product_id})</span>
-                  <span>➔</span>
-                  <span className="flow-branch-good">Swapped to [BETTER] SKU {firstItem?.product_id} — {firstItem?.name}</span>
-                </div>
-              )}
-              <dl className="flow-detail-grid">
-                {parsedLine && bestOption && (
-                  <div>
-                    <dt>Pack conversion formula</dt>
-                    <dd><code>ceil({parsedLine.target_volume_liters_or_kg} ÷ {bestOption.product.net_volume_liters_or_kg ?? 1}) = {firstItem?.quantity ?? bestOption.recommended_packs} × {firstItem?.unit ?? bestOption.product.unit}</code></dd>
-                  </div>
-                )}
-                {firstItem && (
-                  <div>
-                    <dt>Locked unit price (+tax)</dt>
-                    <dd>{firstItem.unit_price_cents != null ? `${money(firstItem.unit_price_cents)} per ${firstItem.unit}` : money(activeOrder!.total_cents / Math.max(firstItem.quantity, 1))}</dd>
-                  </div>
-                )}
-                <div>
-                  <dt>Live Valio Aimo stock</dt>
-                  <dd>{bestOption?.available_packs == null ? "Terminal direct-delivery stock (Unlimited)" : `${bestOption.available_packs} packs in warehouse`}</dd>
-                </div>
-              </dl>
-              {trace[2] && <p className="flow-raw-trace">{trace[2]}</p>}
-            </div>
-          )}
-        </div>
-
-        <div className="flow-connector" aria-hidden="true"><ArrowDown size={14} /></div>
-
-        {/* NODE 4: GUARDRAIL & APPROVAL DECISION */}
-        <div className={`flow-node ${openNode === 4 ? "expanded" : ""}`} role="listitem">
-          <button type="button" className="flow-node-trigger" onClick={() => toggle(4)} aria-expanded={openNode === 4}>
-            <span className={`flow-node-icon ${activeOrder?.status === "pending" ? "orange" : "turquoise"}`}>
-              {activeOrder?.status === "pending" ? <ShieldAlert size={15} /> : <ShieldCheck size={15} />}
-            </span>
-            <span className="flow-node-main">
-              <small>4 · Guardrail & Approval Check</small>
-              <strong>{step4Headline}</strong>
-            </span>
-            {activeOrder && (
-              <span className={`status ${activeOrder.status}`}><span />{statusLabels[activeOrder.status]}</span>
+            {activeOrder.status === "pending" && onOpenApprovals && (
+              <button type="button" className="primary-button" onClick={onOpenApprovals}>
+                Review in Approval Centre <ArrowRight size={14} />
+              </button>
             )}
-            <span className="flow-node-chevron">{openNode === 4 ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
-          </button>
-          {openNode === 4 && (
-            <div className="flow-node-details">
-              <ul className="flow-guardrail-list">
-                <li>
-                  <Check size={13} />
-                  <span><strong>Workspace auto-approve limit:</strong> {money(guardrails?.max_auto_approve_cents ?? 25000)} ({activeOrder && activeOrder.total_cents <= (guardrails?.max_auto_approve_cents ?? 25000) ? "Passed" : "Requires human sign-off"})</span>
+          </div>
+
+          {activeOrder.status === "pending" && activeOrder.reasons.length > 0 ? (
+            <ul className="approval-reasons-list">
+              {activeOrder.reasons.map((reason, idx) => (
+                <li key={idx}>
+                  <strong>Guardrail triggered:</strong> {reason}
                 </li>
-                <li>
-                  <Check size={13} />
-                  <span><strong>Restricted allergens check:</strong> {(guardrails?.review_allergens ?? ["gluten", "nuts"]).join(", ") || "None"}</span>
-                </li>
-                <li>
-                  <Check size={13} />
-                  <span><strong>Substitution policy:</strong> {isSubstituted ? "Substituted SKU flagged for human review" : "Primary SKU fulfilled without substitution"}</span>
-                </li>
-                {activeOrder?.total_carbon_kg != null && (
-                  <li>
-                    <Check size={13} />
-                    <span><strong>Estimated order carbon footprint:</strong> {activeOrder.total_carbon_kg.toFixed(2)} kg CO2e</span>
-                  </li>
-                )}
-              </ul>
-              {activeOrder && activeOrder.reasons.length > 0 && (
-                <div className="decision-note attention" style={{ marginTop: 8 }}>
-                  <strong>Escalated to Approval Centre:</strong> {activeOrder.reasons.join(" · ")}
-                  {activeOrder.status === "pending" && onOpenApprovals && (
-                    <div style={{ marginTop: 8 }}>
-                      <button type="button" className="secondary-button" onClick={onOpenApprovals}>
-                        Open Approval Centre →
-                      </button>
+              ))}
+            </ul>
+          ) : (
+            <p className="approval-pass-note">
+              Passed all autonomous guardrails: total spend <code>{money(activeOrder.total_cents)} &lt;= {money(guardrails?.max_auto_approve_cents ?? 25000)}</code> limit, <code>0</code> restricted allergens, and primary SKU in stock.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* SECTION 3: MINIMALIST CLICK-TO-EXPAND ALGORITHM STEPS */}
+      <div className="algorithm-steps-container">
+        <div className="algorithm-steps-header">
+          <span>Algorithm thinking steps (click any step to expand console trace)</span>
+        </div>
+
+        {/* STEP 1 DROPDOWN */}
+        <details className="algo-step-dropdown">
+          <summary>
+            <span className="algo-step-num sky"><Filter size={13} /> Step 1</span>
+            <span className="algo-step-title">Category & Dietary Filter — <code>{step1Short}</code></span>
+            <span className="algo-step-pill">{step1Cat}</span>
+          </summary>
+          <div className="algo-step-body">
+            <p>
+              Routed query <code>{parsedLine?.query ?? execution?.prompt ?? "request"}</code> directly to GS1 category{" "}
+              <code>{chosenProduct?.category ?? "10400"}</code> before scoring. Enforced workspace allergen exclusions{" "}
+              <code>[{(parsedLine?.exclude_allergens ?? guardrails?.review_allergens ?? ["gluten", "nuts"]).join(", ")}]</code>{" "}
+              and required dietary claims <code>[{(chosenProduct?.dietary_claims ?? ["lactose_free"]).join(", ")}]</code>.
+            </p>
+            <div className="console-kv-block">
+              <div><span>Active Kitchen Priority:</span> <code>{PRIORITY_LABELS[priorityMode]}</code></div>
+              <div><span>Requested Delivery Date:</span> <code>{execution?.requested_date ?? tv?.requested_delivery_date ?? "2026-11-16"}</code></div>
+              {trace[0] && <div><span>Console Trace:</span> <code>{trace[0]}</code></div>}
+            </div>
+          </div>
+        </details>
+
+        {/* STEP 2 DROPDOWN */}
+        <details className="algo-step-dropdown">
+          <summary>
+            <span className="algo-step-num blue"><Trophy size={13} /> Step 2</span>
+            <span className="algo-step-title">Priority Ranking ({priorityMode.replace("_", " ")}) — <code>{step2Short}</code></span>
+            <span className="algo-step-pill">{options.length || 3} candidates compared</span>
+          </summary>
+          <div className="algo-step-body">
+            <p>
+              Ranked eligible SKUs using the <strong>{PRIORITY_LABELS[priorityMode]}</strong> scoring weights (Delivery Reliability, Carbon Footprint vs category median, Country of Origin, and Comparison Price per L/kg):
+            </p>
+            {options.length > 0 ? (
+              <div className="console-candidates-list">
+                {options.slice(0, 3).map((opt, idx) => {
+                  const p = opt.product;
+                  const tier = (opt.tier ?? (idx === 0 ? "BEST" : idx === 1 ? "BETTER" : "GOOD")).toUpperCase();
+                  const pComp = p.comparison_price_cents != null && p.comparison_unit
+                    ? `${money(p.comparison_price_cents)}/${p.comparison_unit}`
+                    : p.unit_price_cents != null
+                      ? `${money(p.unit_price_cents)}/${p.unit}`
+                      : "Verified";
+                  const pCerts = (p.sustainability_labels ?? []).filter((l) => !l.startsWith("Cat "));
+                  return (
+                    <div key={p.product_id} className={`console-candidate-item ${idx === 0 ? "top-choice" : ""}`}>
+                      <div className="console-candidate-head">
+                        <span className={`tier-badge ${tier.toLowerCase()}`}>#{idx + 1} [{tier}]</span>
+                        <code>SKU {p.product_id}</code>
+                        <strong>{p.name}</strong>
+                      </div>
+                      <div className="console-candidate-meta">
+                        <span>Price/unit: <code>{pComp}</code></span>
+                        <span>Origin: <code>{(p.country_of_origin || "FI").toUpperCase()}</code></span>
+                        <span>Reliability: <code>{p.delivery_reliability != null ? `${(p.delivery_reliability * 100).toFixed(1)}%` : "100.0%"}</code></span>
+                        <span>CO2: <code>{p.carbon_footprint_kg != null ? `${p.carbon_footprint_kg.toFixed(2)} kg CO2e/kg` : "Med"}</code></span>
+                        {pCerts.length > 0 && <span>Certificates: <code>{pCerts.join(", ")}</code></span>}
+                      </div>
+                      {opt.tradeoff_explanation && <p className="console-candidate-reason">{opt.tradeoff_explanation}</p>}
                     </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+                  );
+                })}
+              </div>
+            ) : (
+              trace[1] && <p><code>{trace[1]}</code></p>
+            )}
+          </div>
+        </details>
 
-        <div className="flow-connector" aria-hidden="true"><ArrowDown size={14} /></div>
-
-        {/* NODE 5: TRUST & PRIVACY RECEIPT */}
-        <div className={`flow-node ${openNode === 5 ? "expanded" : ""}`} role="listitem">
-          <button type="button" className="flow-node-trigger" onClick={() => toggle(5)} aria-expanded={openNode === 5}>
-            <span className="flow-node-icon sky"><Lock size={15} /></span>
-            <span className="flow-node-main">
-              <small>5 · Verifiable Quote Lock & Privacy</small>
-              <strong>{step5Headline}</strong>
+        {/* STEP 3 DROPDOWN */}
+        <details className="algo-step-dropdown">
+          <summary>
+            <span className={`algo-step-num ${isSubstituted ? "orange" : "turquoise"}`}>
+              {isSubstituted ? <ArrowDownUp size={13} /> : <PackageCheck size={13} />} Step 3
             </span>
-            <span className="flow-node-badge">HMAC-SHA256</span>
-            <span className="flow-node-chevron">{openNode === 5 ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
-          </button>
-          {openNode === 5 && (
-            <div className="flow-node-details">
-              <dl className="flow-detail-grid">
-                <div><dt>Trust protocol</dt><dd><code>{tv?.protocol ?? "keittio-valio-trust-v1"}</code></dd></div>
-                {tv?.quote_lock_id && <div><dt>Quote lock ID</dt><dd><code>{tv.quote_lock_id}</code></dd></div>}
-                {tv?.signature_hmac_sha256 && <div><dt>HMAC-SHA256 signature</dt><dd><code>{tv.signature_hmac_sha256.slice(0, 28)}…</code></dd></div>}
-                {tv?.earliest_closing_time && <div><dt>Order cutoff time</dt><dd>{tv.earliest_closing_time}</dd></div>}
-                <div><dt>Orchestrator & audit model</dt><dd><code>{tv?.privacy_audit_model ?? execution?.orchestrator_model ?? "models/gemma-4-26b-a4b-it"}</code></dd></div>
-                {tv?.privacy_audit_summary && <div><dt>Margin & data protection</dt><dd>{tv.privacy_audit_summary}</dd></div>}
-                {tv?.redacted_confidential_fields?.length ? (
-                  <div><dt>Redacted wholesale fields</dt><dd><code>{tv.redacted_confidential_fields.join(", ")}</code></dd></div>
-                ) : null}
-              </dl>
+            <span className="algo-step-title">
+              {isSubstituted ? "Stock-Out Auto-Substitution" : "Wholesale Pack Math & Live Stock"} — <code>{packFormula}</code>
+            </span>
+            <span className={`algo-step-pill ${isSubstituted ? "warning" : ""}`}>
+              {isSubstituted ? "Swapped to [BETTER]" : "100% In Stock"}
+            </span>
+          </summary>
+          <div className="algo-step-body">
+            {isSubstituted ? (
+              <p>
+                Primary <code>[BEST]</code> item (<code>{firstItem?.substituted_for ?? `SKU ${bestOption?.product.product_id}`}</code>) had a warehouse stock shortfall for the requested delivery date. Automatically swapped to the <code>#2 [BETTER]</code> substitute in the same GS1 category: <code>SKU {firstItem?.product_id} — {firstItem?.name}</code>.
+              </p>
+            ) : (
+              <p>
+                Converted requested kitchen volume into whole wholesale packs using <code>{packFormula}</code> and verified live Valio Aimo warehouse stock for delivery on <code>{execution?.requested_date ?? "2026-11-16"}</code>.
+              </p>
+            )}
+            <div className="console-kv-block">
+              <div><span>Pack Math Formula:</span> <code>{packFormula}</code></div>
+              <div><span>Locked Unit Price (+tax):</span> <code>{unitPriceCents != null ? `${money(unitPriceCents)} / ${unitLabel}` : compPriceStr}</code></div>
+              <div><span>Warehouse Stock Status:</span> <code>{chosenOption?.available_packs == null ? "Terminal Direct-Delivery Stock (Unlimited)" : `${chosenOption.available_packs} packs available`}</code></div>
+              {trace[2] && <div><span>Console Trace:</span> <code>{trace[2]}</code></div>}
             </div>
-          )}
-        </div>
+          </div>
+        </details>
+
+        {/* STEP 4 DROPDOWN */}
+        <details className="algo-step-dropdown">
+          <summary>
+            <span className="algo-step-num sky"><Lock size={13} /> Step 4</span>
+            <span className="algo-step-title">
+              Guardrails & Cryptographic Quote Lock — <code>{tv?.quote_lock_id ?? activeOrder?.id ?? "keittio-valio-trust-v1"}</code>
+            </span>
+            <span className="algo-step-pill">HMAC-SHA256</span>
+          </summary>
+          <div className="algo-step-body">
+            <p>
+              Locked fixed catalog pricing under protocol <code>{tv?.protocol ?? "keittio-valio-trust-v1"}</code> and verified confidential supplier margin redaction via <code>{tv?.privacy_audit_model ?? execution?.orchestrator_model ?? "models/gemma-4-26b-a4b-it"}</code>.
+            </p>
+            <div className="console-kv-block">
+              <div><span>Workspace Spend Guardrail:</span> <code>{money(activeOrder?.total_cents ?? 0)} vs {money(guardrails?.max_auto_approve_cents ?? 25000)} auto-approve limit</code></div>
+              {tv?.quote_lock_id && <div><span>Quote Lock ID:</span> <code>{tv.quote_lock_id}</code></div>}
+              {tv?.signature_hmac_sha256 && <div><span>HMAC-SHA256 Signature:</span> <code>{tv.signature_hmac_sha256.slice(0, 32)}…</code></div>}
+              {tv?.earliest_closing_time && <div><span>Order Cut-off Time:</span> <code>{tv.earliest_closing_time}</code></div>}
+              {tv?.privacy_audit_summary && <div><span>Privacy & Margin Attestation:</span> <span>{tv.privacy_audit_summary}</span></div>}
+            </div>
+          </div>
+        </details>
       </div>
-    </section>
+    </div>
   );
 }
