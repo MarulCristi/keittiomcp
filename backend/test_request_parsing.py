@@ -156,6 +156,47 @@ class CatalogAndErrorTests(unittest.TestCase):
         self.assertIn("gluten", result.rejection_reason or "")
         self.assertEqual([p.product_id for p in result.rejected_products], ["SYN-BREAD-1"])
 
+    def test_gluten_free_milk_selects_dairy_milk_never_chocolate(self):
+        from valio_client import AgentExecutionRequest
+
+        milk = Product(
+            product_id="MILK-1",
+            name="Valio skimmed milk 10 l",
+            category="10400",
+            unit="10 L",
+            unit_price_cents=1200,
+            net_volume_liters_or_kg=10.0,
+            allergens=["milk"],
+            dietary_claims=[],
+            delivery_reliability=1.0,
+        )
+        chocolate = Product(
+            product_id="CHOC-1",
+            name="Panda milk chocolate praline 280g",
+            category="52290",
+            unit="280 g",
+            unit_price_cents=590,
+            net_volume_liters_or_kg=0.28,
+            allergens=["milk"],
+            dietary_claims=["gluten_free"],
+            delivery_reliability=1.0,
+        )
+        self.client.supplier = SimpleNamespace(
+            transport=None,
+            data_dir=None,
+            mode="junction",
+            catalog=lambda: (chocolate, milk),
+            product_by_id=lambda pid: {"MILK-1": milk, "CHOC-1": chocolate}.get(pid),
+            explicit_substitutes=lambda pid: [],
+            check_batch_availability=lambda *a, **k: ({}, "2026-11-14T20:00:00Z"),
+        )
+        result = self.client.execute_trade_request(
+            AgentExecutionRequest(prompt="20 L of gluten-free milk", auto_place_order=False)
+        )
+        self.assertFalse(result.rejected)
+        self.assertEqual(result.proposed_order_lines[0].product_id, "MILK-1")
+        self.assertEqual(result.plans[0].options[0].product.product_id, "MILK-1")
+
 
 if __name__ == "__main__":
     unittest.main()

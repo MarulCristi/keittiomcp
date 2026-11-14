@@ -1860,11 +1860,13 @@ class ValioClient:
         active_priority = self._resolve_priority_mode(priority_mode, query)
         cleaned = _normalize_word_hyphens(_normalize_quantity_numbers(query.casefold())).strip()
         required_claims: list[str] = []
+        gluten_free_requested = False
         if "lactose-free" in cleaned or "lactose free" in cleaned or "laktoositon" in cleaned:
             required_claims.append("lactose_free")
             cleaned = re.sub(r"lactose[-\s]free|laktoositon", " ", cleaned)
         if "gluten-free" in cleaned or "gluten free" in cleaned or "gluteeniton" in cleaned:
             required_claims.append("gluten_free")
+            gluten_free_requested = True
             cleaned = re.sub(r"gluten[-\s]free|gluteeniton", " ", cleaned)
         if "vegan" in cleaned or "vegaaninen" in cleaned:
             required_claims.append("vegan")
@@ -1880,18 +1882,27 @@ class ValioClient:
         if not terms and not required_claims:
             terms = _normalize_query_terms(query.casefold())
 
-        restricted_allergens = self._effective_excluded_allergens(extra_excluded)
+        effective_extra = set(extra_excluded or ())
+        if gluten_free_requested:
+            effective_extra.add("gluten")
+        restricted_allergens = self._effective_excluded_allergens(effective_extra)
 
         if self.supplier:
             catalog = self.supplier.catalog()
             target_categories = _resolve_target_categories(terms, cleaned)
+            asked_confectionery = any(
+                w in cleaned for w in ("chocolate", "suklaa", "candy", "karkki", "praline", "truffle", "confectionery")
+            )
+            gluten_risk_categories = {"10900", "10901", "10902", "21200", "21211", "41760", "41761", "11030", "41763", "41764"}
 
-            def collect_raw(enforce_categories: bool) -> list[Product]:
+            def collect_raw(enforce_categories: bool, claims: list[str]) -> list[Product]:
                 found: list[Product] = []
                 for product in catalog:
                     if enforce_categories and target_categories and product.category not in target_categories:
                         continue
-                    if required_claims and not all(c in (product.dietary_claims or []) for c in required_claims):
+                    if not enforce_categories and target_categories and not asked_confectionery and product.category.startswith("522"):
+                        continue
+                    if claims and not all(c in (product.dietary_claims or []) for c in claims):
                         continue
                     searchable = _normalize_word_hyphens(
                         f"{product.product_id} {product.name} {product.name_fi or ''} {product.category} {product.vendor or ''}".casefold()
@@ -1905,15 +1916,21 @@ class ValioClient:
                         found.append(product)
                 return found
 
-            raw_matches = collect_raw(enforce_categories=True)
+            raw_matches = collect_raw(enforce_categories=True, claims=required_claims)
+            # Naturally gluten-free categories (e.g. Cat 10400 dairy milk, produce, meat, fish) rarely carry a marketing
+            # FREE_FROM_GLUTEN sticker; stay inside target_categories and rely on strict gluten allergen exclusion instead
+            # of falling outside the category into gluten-free chocolate pralines.
+            if not raw_matches and gluten_free_requested and target_categories and not (target_categories & gluten_risk_categories):
+                relaxed_claims = [c for c in required_claims if c != "gluten_free"]
+                raw_matches = collect_raw(enforce_categories=True, claims=relaxed_claims)
             if not raw_matches and self.supplier.transport is None:
                 ai_terms = self._translate_query_with_gemini(query)
                 if ai_terms:
                     terms = _normalize_query_terms(" ".join(ai_terms))
                     target_categories = _resolve_target_categories(terms, " ".join(ai_terms))
-                    raw_matches = collect_raw(enforce_categories=True)
+                    raw_matches = collect_raw(enforce_categories=True, claims=required_claims)
             if not raw_matches:
-                raw_matches = collect_raw(enforce_categories=False)
+                raw_matches = collect_raw(enforce_categories=False, claims=required_claims)
 
             asked_for_processed = any(
                 w in terms for w in ("burger", "patty", "pihvi", "pie", "piirakka", "soup", "keitto", "ball", "meatball")
