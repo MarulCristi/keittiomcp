@@ -20,6 +20,20 @@ const PRIORITY_LABELS: Record<PriorityMode, string> = {
   highest_reliability: "Highest Delivery Reliability (100% On-Time)",
 };
 
+function renderCodeTokens(text: string) {
+  const parts = text.split(/(`[^`]+`|\b(?:SKU\s+\S+|GS1\s+Cat\s+\S+|PO-\d+|QLOCK-[A-Z0-9-]+)\b)/gi);
+  return parts.map((part, idx) => {
+    if (!part) return null;
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={idx} className="step-inline-code">{part.slice(1, -1)}</code>;
+    }
+    if (/^(?:SKU\s+\S+|GS1\s+Cat\s+\S+|PO-\d+|QLOCK-[A-Z0-9-]+)$/i.test(part)) {
+      return <code key={idx} className="step-inline-code">{part}</code>;
+    }
+    return <span key={idx}>{part}</span>;
+  });
+}
+
 function splitCertificatesAndCo2Range(labels: string[] = []) {
   const certificates: string[] = [];
   let co2Range: string | null = null;
@@ -98,38 +112,57 @@ export default function DecisionFlowDiagram({
   const winnerProduct = bestOption?.product;
   const tv = activeOrder?.trust_verification;
 
-  const step1Summary = parsedLine
-    ? `${parsedLine.target_volume_liters_or_kg.toLocaleString("en-GB")} ${parsedLine.unit_hint} '${parsedLine.query}'`
-    : (trace[0]?.replace(/^\d+\.\s*[^:]+:\s*/, "").split("·")[0]?.trim() ?? "Catalog & dietary filter");
+  const step1Summary = parsedLine ? (
+    <>
+      <code>{parsedLine.target_volume_liters_or_kg.toLocaleString("en-GB")} {parsedLine.unit_hint}</code>{" "}
+      <code>{parsedLine.query}</code>
+    </>
+  ) : (
+    renderCodeTokens(trace[0]?.replace(/^\d+\.\s*[^:]+:\s*/, "").split("·")[0]?.trim() ?? "Catalog & dietary filter")
+  );
   const step1Badge = bestOption?.product.category
     ? `GS1 Cat ${bestOption.product.category}`
     : (trace[0]?.match(/GS1 Cat\s+(\S+)/i)?.[1] ? `GS1 Cat ${trace[0].match(/GS1 Cat\s+(\S+)/i)?.[1]}` : "Filtered");
 
-  const step2Summary = winnerProduct
-    ? `SKU ${winnerProduct.product_id} — ${winnerProduct.name}`
-    : firstItem
-      ? `SKU ${firstItem.product_id} — ${firstItem.name}`
-      : (trace[1]?.replace(/^\d+\.\s*[^:]+:\s*/, "") ?? "Ranked candidates");
+  const step2SkuId = winnerProduct?.product_id ?? firstItem?.product_id;
+  const step2Name = winnerProduct?.name ?? firstItem?.name;
+  const step2Summary = step2SkuId ? (
+    <>
+      <code>SKU {step2SkuId}</code> — {step2Name}
+    </>
+  ) : (
+    renderCodeTokens(trace[1]?.replace(/^\d+\.\s*[^:]+:\s*/, "") ?? "Ranked candidates")
+  );
   const step2Badge = winnerProduct?.delivery_reliability != null
     ? `${(winnerProduct.delivery_reliability * 100).toFixed(0)}% on-time`
     : activeOrder?.min_reliability != null
       ? `${(activeOrder.min_reliability * 100).toFixed(0)}% on-time`
       : PRIORITY_LABELS[priorityMode].split(" ")[0];
 
-  const step3Summary = isRejected
-    ? "Skipped — 0 allergen-safe SKUs"
-    : firstItem
-      ? `${firstItem.quantity.toLocaleString("en-GB")} × ${firstItem.unit}`
-      : bestOption
-        ? `${bestOption.recommended_packs ?? 1} × ${bestOption.product.unit}`
-        : "Pack math verified";
+  const step3Summary = isRejected ? (
+    <>
+      <code>0 safe SKUs</code> — skipped pack math
+    </>
+  ) : firstItem ? (
+    <code>{firstItem.quantity.toLocaleString("en-GB")} × {firstItem.unit}</code>
+  ) : bestOption ? (
+    <code>{bestOption.recommended_packs ?? 1} × {bestOption.product.unit}</code>
+  ) : (
+    <code>Pack math verified</code>
+  );
   const step3Badge = isRejected ? "Ignored" : isSubstituted ? "Auto-Substituted" : "Stock Verified";
 
-  const step4Summary = isRejected
-    ? "REJECTED · No order placed"
-    : activeOrder
-      ? `${activeOrder.id} · ${money(activeOrder.total_cents)}`
-      : "Prepared plan";
+  const step4Summary = isRejected ? (
+    <>
+      <code>REJECTED</code> · No order placed
+    </>
+  ) : activeOrder ? (
+    <>
+      <code>{activeOrder.id}</code> · <code>{money(activeOrder.total_cents)}</code>
+    </>
+  ) : (
+    <code>Prepared plan</code>
+  );
   const step4Badge = isRejected ? "Rejected" : activeOrder ? statusLabels[activeOrder.status] : "Quote ready";
 
   return (
@@ -154,7 +187,7 @@ export default function DecisionFlowDiagram({
           <div className="step-dropdown" aria-hidden={!openSteps[1]}>
             <div className="step-dropdown-inner">
               <div className="step-console-grid">
-                <div><span>Request</span><code>{execution?.prompt ?? step1Summary}</code></div>
+                <div><span>Request</span><code>{execution?.prompt ?? (parsedLine ? `${parsedLine.target_volume_liters_or_kg} ${parsedLine.unit_hint} ${parsedLine.query}` : "Kitchen query")}</code></div>
                 {parsedLine && (
                   <div><span>Target volume</span><code>{parsedLine.target_volume_liters_or_kg.toLocaleString("en-GB")} {parsedLine.unit_hint}</code></div>
                 )}
@@ -162,7 +195,7 @@ export default function DecisionFlowDiagram({
                 <div><span>Excluded allergens</span><code>{(parsedLine?.exclude_allergens ?? guardrails?.review_allergens ?? []).join(", ") || "None"}</code></div>
                 <div><span>Kitchen priority</span><strong>{priorityTitle}</strong></div>
               </div>
-              {trace[0] && <pre className="step-console-line">{trace[0]}</pre>}
+              {trace[0] && <pre className="step-console-line">{renderCodeTokens(trace[0])}</pre>}
             </div>
           </div>
         </div>
@@ -188,7 +221,7 @@ export default function DecisionFlowDiagram({
                 Evaluated {options.length > 0 ? `top ${options.length} pure & category-matched Valio Aimo SKUs` : "catalog matches"} under{" "}
                 <strong>{priorityTitle}</strong> weighting (ingredient purity tier, delivery reliability, CO₂e/kg vs category median, and comparison price/kg or L).
               </p>
-              {trace[1] && <pre className="step-console-line">{trace[1]}</pre>}
+              {trace[1] && <pre className="step-console-line">{renderCodeTokens(trace[1])}</pre>}
             </div>
           </div>
         </div>
@@ -239,7 +272,7 @@ export default function DecisionFlowDiagram({
                   <code>{bestOption?.available_packs == null ? "Direct terminal allocation" : `${bestOption.available_packs} packs available`}</code>
                 </div>
               </div>
-              {trace[2] && <pre className="step-console-line">{trace[2]}</pre>}
+              {trace[2] && <pre className="step-console-line">{renderCodeTokens(trace[2])}</pre>}
             </div>
           </div>
         </div>
@@ -277,7 +310,7 @@ export default function DecisionFlowDiagram({
               {tv?.privacy_audit_summary && (
                 <p className="step-explain-text" style={{ marginTop: 8 }}>{tv.privacy_audit_summary}</p>
               )}
-              {trace[3] && <pre className="step-console-line">{trace[3]}</pre>}
+              {trace[3] && <pre className="step-console-line">{renderCodeTokens(trace[3])}</pre>}
             </div>
           </div>
         </div>
@@ -492,10 +525,6 @@ export default function DecisionFlowDiagram({
                         </div>
                       </div>
                     )}
-
-                    {opt.tradeoff_explanation && (
-                      <p className="choice-rationale">{opt.tradeoff_explanation}</p>
-                    )}
                   </div>
                 </article>
               );
@@ -507,15 +536,46 @@ export default function DecisionFlowDiagram({
       {/* 3. Final Decision & Crystal-Clear Approval Outcome */}
       {activeOrder && (
         <section
-          className={`outcome-banner ${activeOrder.status === "pending" ? "is-pending" : "is-approved"}`}
+          className={`outcome-banner ${
+            activeOrder.status === "rejected"
+              ? "is-rejected"
+              : activeOrder.status === "pending"
+                ? "is-pending"
+                : "is-approved"
+          }`}
           aria-label="Selected product and order decision"
         >
           <div className="outcome-top">
             <div className="outcome-title-wrap">
-              <span className={`outcome-badge ${activeOrder.status === "pending" ? "pending" : "approved"}`}>
-                {activeOrder.status === "pending" ? <AlertTriangle size={14} /> : <ShieldCheck size={14} />}
-                {isSubstituted ? "Selected (Auto-Substituted)" : "Selected"}
+              <span
+                className={`outcome-badge ${
+                  activeOrder.status === "rejected"
+                    ? "rejected"
+                    : activeOrder.status === "pending"
+                      ? "pending"
+                      : "approved"
+                }`}
+              >
+                {activeOrder.status === "rejected" ? (
+                  <Ban size={14} />
+                ) : activeOrder.status === "pending" ? (
+                  <AlertTriangle size={14} />
+                ) : (
+                  <ShieldCheck size={14} />
+                )}
+                {activeOrder.status === "rejected"
+                  ? "Denied / Rejected"
+                  : activeOrder.status === "pending"
+                    ? "Pending Approval"
+                    : activeOrder.status === "auto_approved"
+                      ? "Auto-Approved"
+                      : "Approved"}
               </span>
+              {isSubstituted && (
+                <span className="outcome-badge substituted">
+                  <ArrowDownUp size={13} /> Auto-Substituted
+                </span>
+              )}
               <h3>
                 {firstItem ? firstItem.name : `Order ${activeOrder.id}`}
               </h3>
@@ -550,7 +610,17 @@ export default function DecisionFlowDiagram({
             </div>
           )}
 
-          {activeOrder.status === "pending" ? (
+          {activeOrder.status === "rejected" ? (
+            <div className="outcome-why-rejected">
+              <div className="why-pending-heading">
+                <Ban size={18} />
+                <h4>Order {activeOrder.id} Denied / Rejected</h4>
+              </div>
+              <p className="why-rejected-text">
+                {activeOrder.reasons?.length ? activeOrder.reasons.join(" · ") : "Order was denied by kitchen guardrails or human reviewer."}
+              </p>
+            </div>
+          ) : activeOrder.status === "pending" ? (
             <div className="outcome-why-pending">
               <div className="why-pending-heading">
                 <ShieldAlert size={20} />

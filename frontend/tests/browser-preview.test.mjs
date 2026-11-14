@@ -61,6 +61,8 @@ test("scheduled auto-buy executes live when advancing the simulated clock into t
   assert.equal(created.rules.length, 1);
   assert.equal(created.rules[0].cadence, "daily");
   assert.equal(created.rules[0].run_time, "07:00");
+  const tick = await client.request("clock/advance", "POST", { seconds: 45 });
+  assert.equal(tick.offset_seconds, 45);
   const advanced = await client.request("clock/advance", "POST", { days: 1 });
   assert.equal(advanced.executed_runs.length, 1);
   assert.equal(advanced.rules[0].runs_completed, 1);

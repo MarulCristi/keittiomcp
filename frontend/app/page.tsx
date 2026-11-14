@@ -1,8 +1,8 @@
 "use client";
 
 import {
-  ArrowDownUp, ArrowRight, ArrowUp, Award, Bot, CalendarClock, Check, CircleHelp, ClipboardList,
-  Clock, Egg, FastForward, Fish, History, LayoutDashboard, Leaf, Milk, Nut, Pause, Play,
+  ArrowDownUp, ArrowRight, ArrowUp, Award, Bot, CalendarClock, Check, ChevronDown, CircleHelp, ClipboardList,
+  Clock, Egg, FastForward, Fish, History, LayoutDashboard, Leaf, Maximize2, Milk, Minimize2, Nut, Pause, Play,
   Plus, RefreshCw, RotateCcw, Search, ShieldCheck, ShoppingBasket, Sparkles, SlidersHorizontal,
   Tag, Trash2, Wheat,
 } from "lucide-react";
@@ -19,7 +19,7 @@ import {
   api, errorMessage, money, orderRequester, sampleProducts, statusLabels,
   type AgentExecutionResult, type Allergen, type Availability, type BlockedAllergenMatches,
   type ClockAdvanceResponse, type Guardrails, type Order, type PriorityMode, type Product,
-  type ScheduledOrderCadence, type ScheduleWorkspaceState,
+  type ScheduledOrderCadence, type ScheduledOrderRule, type ScheduleWorkspaceState,
 } from "./lib/purchasing";
 
 const allergens = [
@@ -41,6 +41,82 @@ const priorityOptions: { id: PriorityMode; label: string; shortLabel: string; hi
 
 const PREFS_STORAGE_KEY = "keittio:preferences:v1";
 type StoredKitchenPrefs = { onboarded: boolean; priority_modes: PriorityMode[]; review_allergens: Allergen[] };
+
+const CLOCK_SPEEDS: { value: number; label: string }[] = [
+  { value: 0, label: "Pause" },
+  { value: 1, label: "1× Live" },
+  { value: 60, label: "1m/s" },
+  { value: 900, label: "15m/s" },
+  { value: 3600, label: "1h/s" },
+  { value: 21600, label: "6h/s" },
+];
+
+function computeEffectiveClockStepSeconds(
+  baseSpeed: number,
+  simNowMs: number,
+  rules: ScheduledOrderRule[],
+): { stepSeconds: number; slowingForRule: ScheduledOrderRule | null } {
+  if (baseSpeed <= 1) return { stepSeconds: baseSpeed, slowingForRule: null };
+  const enabled = rules
+    .filter((r) => r.enabled)
+    .sort((a, b) => new Date(a.next_run_at).getTime() - new Date(b.next_run_at).getTime());
+  const nextRule = enabled[0];
+  if (!nextRule) return { stepSeconds: baseSpeed, slowingForRule: null };
+  const secsUntil = Math.max(0, Math.ceil((new Date(nextRule.next_run_at).getTime() - simNowMs) / 1000));
+  if (secsUntil <= 120) {
+    const capped = Math.min(baseSpeed, 15);
+    const stepSeconds = secsUntil > 0 && secsUntil < capped ? secsUntil + 1 : capped;
+    return { stepSeconds, slowingForRule: nextRule };
+  }
+  if (secsUntil <= 900) {
+    const capped = Math.min(baseSpeed, 60);
+    return { stepSeconds: capped, slowingForRule: capped < baseSpeed ? nextRule : null };
+  }
+  if (secsUntil <= 3600) {
+    const capped = Math.min(baseSpeed, 300);
+    return { stepSeconds: capped, slowingForRule: capped < baseSpeed ? nextRule : null };
+  }
+  return { stepSeconds: baseSpeed, slowingForRule: null };
+}
+
+function parseSetupPreferencesFromChat(text: string): { allergens?: Allergen[]; priorities?: PriorityMode[] } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (/^(?:check|substitutes?|order|find|search)\b/i.test(trimmed)) return null;
+  if (/\b\d+(?:[.,]\d+)?\s*(?:tons?|tonnes?|t|litres?|liters?|l|kilograms?|kilos?|kg|grams?|g|packs?|units?|boxes|cases|sacks?|rolls?)\b/i.test(trimmed)) {
+    return null;
+  }
+  const hasSetupIntent = /\b(?:priorit(?:y|ize|ies)|allerg(?:y|ies|en)|exclud(?:e|ing)|avoid|dietar(?:y|ies)|no\s+allerg|none|no\s+restriction|balanced\s+priority|use\s+balanced|keep\s+defaults?)\b/i.test(trimmed)
+    || /^(?:no\s+(?:milk|gluten|soy|eggs?|nuts?|fish)|(?:milk|gluten|soy|eggs?|nuts?|fish)(?:\s*[,&+]\s*(?:milk|gluten|soy|eggs?|nuts?|fish))*)$/i.test(trimmed);
+  if (!hasSetupIntent) return null;
+
+  const detectedAllergens: Allergen[] = [];
+  if (/\b(?:milk|dairy|lactose)\b/i.test(trimmed) && !/\ballerg(?:y|ies)\s*:\s*none\b/i.test(trimmed)) detectedAllergens.push("milk");
+  if (/\bgluten\b/i.test(trimmed)) detectedAllergens.push("gluten");
+  if (/\bsoy\b/i.test(trimmed)) detectedAllergens.push("soy");
+  if (/\beggs?\b/i.test(trimmed)) detectedAllergens.push("eggs");
+  if (/\bnuts?\b/i.test(trimmed)) detectedAllergens.push("nuts");
+  if (/\bfish\b/i.test(trimmed)) detectedAllergens.push("fish");
+
+  const detectedPriorities: PriorityMode[] = [];
+  if (/\b(?:finnish|kotimainen|key\s*flag|blue\s*swan)\b/i.test(trimmed)) detectedPriorities.push("authentic_finnish");
+  if (/\b(?:carbon|co2|sustainable|green|eco)\b/i.test(trimmed)) detectedPriorities.push("low_carbon");
+  if (/\b(?:cheap|cheapest|lowest\s+price|price|budget)\b/i.test(trimmed)) detectedPriorities.push("lowest_price");
+  if (/\b(?:reliab(?:le|ility)|on[- ]time)\b/i.test(trimmed)) detectedPriorities.push("highest_reliability");
+  if (/\bbalanced\b/i.test(trimmed) && detectedPriorities.length === 0) detectedPriorities.push("balanced");
+
+  const result: { allergens?: Allergen[]; priorities?: PriorityMode[] } = {};
+  if (/\bno\s+allerg|allerg(?:y|ies)\s*:\s*none|no\s+restriction|^none\b/i.test(trimmed)) {
+    result.allergens = [];
+  } else if (detectedAllergens.length > 0 || /\ballerg|exclud|avoid|dietar/i.test(trimmed)) {
+    result.allergens = detectedAllergens;
+  }
+  if (detectedPriorities.length > 0) {
+    result.priorities = detectedPriorities;
+  }
+  if (result.allergens === undefined && result.priorities === undefined) return null;
+  return result;
+}
 
 function formatOffsetLabel(offsetSeconds: number): string {
   if (offsetSeconds <= 0) return "Live";
@@ -83,6 +159,7 @@ const prompts = [
 ];
 const zone = "Europe/Helsinki";
 const dates = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: zone });
+const clockTimes = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: zone });
 const days = new Intl.DateTimeFormat("en-CA", { dateStyle: "short", timeZone: zone });
 const navigation = [
   { id: "overview", label: "Overview", Icon: LayoutDashboard },
@@ -131,14 +208,17 @@ export default function Dashboard() {
   const [selection, setSelection] = useState<{ product: Product; sample: boolean; quantity?: number; date?: string; substitutedFor?: string } | null>(null);
   const [showSamples, setShowSamples] = useState(false);
   const [scheduleState, setScheduleState] = useState<ScheduleWorkspaceState | null>(null);
-  const [autoPlayClock, setAutoPlayClock] = useState(false);
+  const [clockSpeed, setClockSpeed] = useState<number>(1);
+  const [clockOpen, setClockOpen] = useState(false);
+  const [clockDisplayNowMs, setClockDisplayNowMs] = useState<number>(() => Date.now());
   const [showScheduleForm, setShowScheduleForm] = useState(false);
   const [schedPrompt, setSchedPrompt] = useState("20 L lactose-free milk");
   const [schedCadence, setSchedCadence] = useState<ScheduledOrderCadence>("daily");
   const [schedTime, setSchedTime] = useState("07:00");
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [onboardAllergens, setOnboardAllergens] = useState<Allergen[]>(["gluten", "nuts"]);
-  const [onboardPriorities, setOnboardPriorities] = useState<PriorityMode[]>(["authentic_finnish"]);
+  const [showSetupDialog, setShowSetupDialog] = useState(false);
+  const [needsInitialSetup, setNeedsInitialSetup] = useState(false);
+  const [isChatFullscreen, setIsChatFullscreen] = useState(false);
+  const clockTickBusy = useRef(false);
   const prefsBootstrapped = useRef(false);
   const chatEnd = useRef<HTMLDivElement>(null);
   const chatInput = useRef<HTMLInputElement>(null);
@@ -199,10 +279,9 @@ export default function Dashboard() {
         prefsBootstrapped.current = true;
         const savedPrefs = readStoredPrefs();
         if (!savedPrefs?.onboarded) {
-          setOnboardAllergens(data.guardrails.review_allergens ?? []);
-          setOnboardPriorities(activePriorityList(data.guardrails));
-          setShowOnboarding(true);
+          setNeedsInitialSetup(true);
         } else {
+          setNeedsInitialSetup(false);
           const mergedModes = savedPrefs.priority_modes?.length ? savedPrefs.priority_modes : activePriorityList(data.guardrails);
           const nextGuardrails: Guardrails = {
             ...data.guardrails,
@@ -262,6 +341,7 @@ export default function Dashboard() {
     setWorkspace((prev) => prev && { ...prev, guardrails: normalized });
     setDraft((prev) => (prev ? { ...normalized } : normalized));
     setActionError("");
+    if (markOnboarded) setNeedsInitialSetup(false);
     saveStoredPrefs({
       onboarded: markOnboarded || Boolean(readStoredPrefs()?.onboarded),
       priority_modes: modes,
@@ -288,7 +368,7 @@ export default function Dashboard() {
     const nextAllergens = current.includes(name)
       ? current.filter((item) => item !== name)
       : [...current, name];
-    await persistGuardrails({ ...workspace.guardrails, review_allergens: nextAllergens });
+    await persistGuardrails({ ...workspace.guardrails, review_allergens: nextAllergens }, true);
   }
 
   async function toggleCompanyPriority(mode: PriorityMode) {
@@ -304,36 +384,17 @@ export default function Dashboard() {
         : [...withoutBalanced, mode];
       if (!nextModes.length) nextModes = ["balanced"];
     }
-    await persistGuardrails({ ...workspace.guardrails, priority_mode: nextModes[0], priority_modes: nextModes });
+    await persistGuardrails({ ...workspace.guardrails, priority_mode: nextModes[0], priority_modes: nextModes }, true);
   }
 
-  async function saveOnboarding(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!workspace) {
-      saveStoredPrefs({ onboarded: true, priority_modes: onboardPriorities.length ? onboardPriorities : ["balanced"], review_allergens: onboardAllergens });
-      setShowOnboarding(false);
-      return;
-    }
-    const chosenModes: PriorityMode[] = onboardPriorities.length ? onboardPriorities : ["balanced"];
-    await persistGuardrails(
-      {
-        ...workspace.guardrails,
-        review_allergens: onboardAllergens,
-        priority_mode: chosenModes[0],
-        priority_modes: chosenModes,
-      },
-      true,
-    );
-    setShowOnboarding(false);
-  }
-
-  async function advanceClock(options: { days?: number; hours?: number; jump_to_next_schedule?: boolean; reset?: boolean }) {
-    if (activeAction || sending) return;
+  async function advanceClock(options: { days?: number; hours?: number; minutes?: number; seconds?: number; jump_to_next_schedule?: boolean; reset?: boolean }) {
+    if (activeAction || sending || clockTickBusy.current) return;
+    clockTickBusy.current = true;
     setActionError("");
     try {
       const res = await request<ClockAdvanceResponse>("clock/advance", "POST", options);
       setScheduleState({ simulated_now: res.simulated_now, real_now: res.real_now, offset_seconds: res.offset_seconds, rules: res.rules });
-      if (options.reset) setAutoPlayClock(false);
+      if (options.reset) setClockSpeed(1);
       if (res.executed_runs.length > 0) {
         const newMessages: Message[] = res.executed_runs.map((run) => ({
           role: "agent",
@@ -344,12 +405,12 @@ export default function Dashboard() {
         }));
         setMessages((prev) => [...prev, ...newMessages]);
         await loadWorkspace(undefined, true);
-      } else {
-        void refreshSideData();
       }
     } catch (error) {
-      setAutoPlayClock(false);
+      setClockSpeed(1);
       setActionError(errorMessage(error));
+    } finally {
+      clockTickBusy.current = false;
     }
   }
 
@@ -387,10 +448,31 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    if (!autoPlayClock) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsChatFullscreen(false);
+        setShowSetupDialog(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (clockSpeed === 0) return;
     const timer = window.setInterval(() => {
-      void advanceClock({ hours: 2 });
-    }, 1200);
+      const realNow = Date.now();
+      setClockDisplayNowMs(realNow);
+      if (!scheduleState || clockTickBusy.current || sending || activeAction) return;
+      const simNowMs = realNow + scheduleState.offset_seconds * 1000;
+      if (clockSpeed > 1) {
+        const { stepSeconds } = computeEffectiveClockStepSeconds(clockSpeed, simNowMs, scheduleState.rules);
+        if (stepSeconds > 0) void advanceClock({ seconds: stepSeconds });
+      } else {
+        const hasDue = scheduleState.rules.some((r) => r.enabled && new Date(r.next_run_at).getTime() <= simNowMs);
+        if (hasDue) void advanceClock({ seconds: 1 });
+      }
+    }, 1000);
     return () => window.clearInterval(timer);
   });
 
@@ -428,6 +510,30 @@ export default function Dashboard() {
   }
 
   async function respond(text: string): Promise<Omit<Message, "role">> {
+    const setupUpdate = parseSetupPreferencesFromChat(text);
+    if (setupUpdate && workspace) {
+      const nextAllergens = setupUpdate.allergens !== undefined ? setupUpdate.allergens : workspace.guardrails.review_allergens;
+      const nextModes = setupUpdate.priorities !== undefined ? setupUpdate.priorities : activePriorityList(workspace.guardrails);
+      await persistGuardrails(
+        {
+          ...workspace.guardrails,
+          review_allergens: nextAllergens,
+          priority_mode: nextModes[0],
+          priority_modes: nextModes,
+        },
+        true,
+      );
+      const priorityText = nextModes.map((m) => priorityOptions.find((o) => o.id === m)?.label ?? m).join(" + ");
+      return {
+        headline: "Kitchen Preferences Saved",
+        text: "Your dietary exclusions and purchasing priorities are now active and remembered for future orders. What would you like to buy?",
+        bullets: [
+          { label: "Excluded Allergens", value: nextAllergens.length ? nextAllergens.join(", ") : "None" },
+          { label: "Purchasing Priority", value: priorityText },
+        ],
+      };
+    }
+
     const isScheduleIntent = /\b(?:every\s+day|daily|every\s+weekday|weekdays|every\s+week|weekly|every\s+morning|each\s+day|schedule)\b/i.test(text)
       || /\b(?:at\s+\d{1,2}[:.]\d{2})\b/i.test(text);
     if (isScheduleIntent) {
@@ -436,7 +542,7 @@ export default function Dashboard() {
       void refreshSideData();
       return {
         headline: `Scheduled Auto-Buy Active · ${created.id}`,
-        text: `Scheduled '${created.prompt}' (${created.cadence} at ${created.run_time} Helsinki). Use +1 Day or Jump to next buy above to fast-forward time and watch the agent execute it live.`,
+        text: `Scheduled '${created.prompt}' (${created.cadence} at ${created.run_time} Helsinki). Open the Simulation Clock below Recent orders to speed up time — it will automatically slow down as it approaches ${created.run_time} and execute live.`,
         bullets: [
           { label: "Schedule Rule", value: `${created.cadence} @ ${created.run_time}`, code: created.id },
           { label: "Order Item", value: created.prompt },
@@ -799,54 +905,6 @@ export default function Dashboard() {
         {actionError && <p className="error workspace-error" role="alert">{actionError}</p>}
         {decisionNotice && view !== "approvals" && <p className="decision-feedback" role="status">{decisionNotice}</p>}
 
-        {workspace && scheduleState && (
-          <section className={`future-clock-bar ${scheduleState.offset_seconds > 0 ? "is-future" : ""}`} aria-label="Future simulation clock and scheduled auto-buying">
-            <div className="future-clock-status">
-              <span className="future-clock-icon"><CalendarClock size={16} /></span>
-              <div>
-                <strong>
-                  {scheduleState.offset_seconds > 0 ? "Future Simulator" : "Live Kitchen Clock"}{" "}
-                  <span className={`future-clock-badge ${scheduleState.offset_seconds > 0 ? "active" : ""}`}>
-                    {formatOffsetLabel(scheduleState.offset_seconds)}
-                  </span>
-                </strong>
-                <small>
-                  <time dateTime={scheduleState.simulated_now}>{dates.format(new Date(scheduleState.simulated_now))}</time>{" "}
-                  Helsinki · {scheduleState.rules.filter((r) => r.enabled).length} active auto-buy schedule(s)
-                </small>
-              </div>
-            </div>
-            <div className="future-clock-actions">
-              <button type="button" className="clock-chip" disabled={Boolean(activeAction) || sending} onClick={() => void advanceClock({ hours: 6 })}>
-                <Clock size={13} /> +6 Hours
-              </button>
-              <button type="button" className="clock-chip primary" disabled={Boolean(activeAction) || sending} onClick={() => void advanceClock({ days: 1 })}>
-                <FastForward size={13} /> +1 Day
-              </button>
-              {scheduleState.rules.some((r) => r.enabled) && (
-                <button type="button" className="clock-chip accent" disabled={Boolean(activeAction) || sending} onClick={() => void advanceClock({ jump_to_next_schedule: true })}>
-                  <Play size={13} /> Jump to next buy
-                </button>
-              )}
-              <button
-                type="button"
-                aria-pressed={autoPlayClock}
-                className={`clock-chip ${autoPlayClock ? "is-playing" : ""}`}
-                disabled={Boolean(activeAction) || sending}
-                onClick={() => setAutoPlayClock((v) => !v)}
-              >
-                {autoPlayClock ? <Pause size={13} /> : <Play size={13} />}
-                {autoPlayClock ? "Pause future" : "Auto-Play"}
-              </button>
-              {scheduleState.offset_seconds > 0 && (
-                <button type="button" className="clock-chip" disabled={Boolean(activeAction) || sending} onClick={() => void advanceClock({ reset: true })}>
-                  <RotateCcw size={13} /> Reset to now
-                </button>
-              )}
-            </div>
-          </section>
-        )}
-
         {view === "overview" && <div className="control-content overview-content">
           <dl className="metric-grid">
             <div className="panel metric-card"><div className="metric-icon sky"><AgentIcon /></div><dt>Connected agents</dt><dd>{preview || workspace ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : workspace ? "Verified external trade agents" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
@@ -867,146 +925,58 @@ export default function Dashboard() {
         {view === "demo" && <RequestPlanner key={`${preview}:${previewVersion}`} request={request} connected={Boolean(workspace) && !workspaceError} busy={Boolean(activeAction) || sending} onBusy={setActiveAction}
           onSelect={(product, quantity, date) => setSelection({ product, sample: false, quantity, date })} />}
         <div className={`dashboard-grid ${view === "overview" ? "home-purchasing" : "demo-review"}`} hidden={view !== "demo" && view !== "overview"}>
-          {view === "overview" && <section className="panel chat-panel" aria-labelledby="chat-title">
+          {view === "overview" && <section className={`panel chat-panel ${isChatFullscreen ? "is-fullscreen" : ""}`} aria-labelledby="chat-title">
             <div className="chat-header">
               <div className="chat-icon"><Bot size={23} strokeWidth={1.75} /></div>
               <div>
                 <h2 id="chat-title">Purchasing assistant</h2>
                 <p><span className={workspace ? "online-dot" : "offline-dot"} /> {preview ? "Using the simulated catalog" : workspace ? "Connected to purchasing service" : workspaceError ? "Waiting for purchasing service" : "Connecting…"}</p>
               </div>
-              <span className="supplier-label">{preview ? "Sample catalog" : "Valio Aimo catalog"}</span>
+              <div className="chat-header-actions">
+                <span className="supplier-label">{preview ? "Sample catalog" : "Valio Aimo catalog"}</span>
+                <button
+                  type="button"
+                  className="chat-fullscreen-btn"
+                  aria-pressed={isChatFullscreen}
+                  title={isChatFullscreen ? "Exit fullscreen chat (Esc)" : "Expand chat fullscreen"}
+                  onClick={() => setIsChatFullscreen((v) => !v)}
+                >
+                  {isChatFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  <span>{isChatFullscreen ? "Exit fullscreen" : "Fullscreen"}</span>
+                </button>
+              </div>
             </div>
 
             {workspace && (
-              <div className="kitchen-guardrails-quickbar">
-                <div className="allergen-quickbar" role="region" aria-label="Company allergen exclusions">
-                  <div className="allergen-quickbar-head">
-                    <strong><ShieldCheck size={14} /> Company excluded allergens (high priority)</strong>
-                    <div className="quickbar-head-right">
-                      <span className={`allergen-count-badge ${workspace.guardrails.review_allergens.length > 0 ? "active" : ""}`}>
-                        {workspace.guardrails.review_allergens.length > 0
-                          ? `${workspace.guardrails.review_allergens.length} excluded`
-                          : "None excluded"}
-                      </span>
-                      <button type="button" className="text-button quick-setup-btn" onClick={() => {
-                        setOnboardAllergens(workspace.guardrails.review_allergens);
-                        setOnboardPriorities(activePriorityList(workspace.guardrails));
-                        setShowOnboarding(true);
-                      }}>
-                        <SlidersHorizontal size={12} /> Kitchen setup
-                      </button>
-                    </div>
-                  </div>
-                  <div className="allergen-quick-chips">
-                    {allergens.map(({ name, label, Icon }) => {
-                      const active = workspace.guardrails.review_allergens.includes(name);
-                      return (
-                        <button
-                          key={name}
-                          type="button"
-                          aria-pressed={active}
-                          disabled={Boolean(activeAction) || sending}
-                          className={`allergen-chip ${active ? "is-excluded" : ""}`}
-                          onClick={() => void toggleCompanyAllergen(name)}
-                        >
-                          <Icon size={13} />
-                          <span>{label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <p className="allergen-quickbar-note">
-                    Category lock + strict allergen exclusion always run first. Matches with checked allergens are ignored; zero safe matches trigger rejection.
-                  </p>
-                </div>
-
-                <div className="priority-quickbar" role="region" aria-label="Active kitchen purchasing priorities">
-                  <div className="allergen-quickbar-head">
-                    <strong><Award size={14} /> Kitchen purchasing priorities (combine one or more)</strong>
-                    <span className="priority-active-summary">
-                      {activePriorityList(workspace.guardrails).map((m) => priorityOptions.find((o) => o.id === m)?.shortLabel ?? m).join(" + ")}
+              <div className="kitchen-setup-bar">
+                <div className="kitchen-setup-summary">
+                  <span className={`setup-summary-pill ${workspace.guardrails.review_allergens.length > 0 ? "is-warn" : ""}`}>
+                    <ShieldCheck size={12} />
+                    {workspace.guardrails.review_allergens.length > 0
+                      ? `Excluded: ${workspace.guardrails.review_allergens.join(", ")}`
+                      : "No allergens excluded"}
+                  </span>
+                  <span className="setup-summary-pill">
+                    <Award size={12} />
+                    Priority: {activePriorityList(workspace.guardrails).map((m) => priorityOptions.find((o) => o.id === m)?.shortLabel ?? m).join(" + ")}
+                  </span>
+                  {(scheduleState?.rules.filter((r) => r.enabled).length ?? 0) > 0 && (
+                    <span className="setup-summary-pill is-accent">
+                      <CalendarClock size={12} />
+                      {scheduleState?.rules.filter((r) => r.enabled).length} scheduled
                     </span>
-                  </div>
-                  <div className="allergen-quick-chips">
-                    {priorityOptions.map(({ id, shortLabel, hint, Icon }) => {
-                      const selected = activePriorityList(workspace.guardrails).includes(id);
-                      return (
-                        <button
-                          key={id}
-                          type="button"
-                          title={hint}
-                          aria-pressed={selected}
-                          disabled={Boolean(activeAction) || sending}
-                          className={`priority-chip ${selected ? "is-selected" : ""}`}
-                          onClick={() => void toggleCompanyPriority(id)}
-                        >
-                          <Icon size={13} />
-                          <span>{shortLabel}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="schedule-quickbar" role="region" aria-label="Scheduled and recurring auto-orders">
-                  <div className="allergen-quickbar-head">
-                    <strong><CalendarClock size={14} /> Recurring &amp; timed auto-buys</strong>
-                    <button type="button" className="text-button quick-setup-btn" onClick={() => setShowScheduleForm((v) => !v)}>
-                      <Plus size={13} /> {showScheduleForm ? "Close" : "Schedule auto-buy"}
-                    </button>
-                  </div>
-                  {showScheduleForm && (
-                    <form className="schedule-inline-form" onSubmit={(e) => {
-                      e.preventDefault();
-                      if (!schedPrompt.trim()) return;
-                      void createScheduleRule(schedPrompt.trim(), schedCadence, schedTime).then(() => setShowScheduleForm(false));
-                    }}>
-                      <input
-                        type="text"
-                        value={schedPrompt}
-                        maxLength={200}
-                        placeholder="e.g. 20 L lactose-free milk"
-                        onChange={(e) => setSchedPrompt(e.target.value)}
-                      />
-                      <select value={schedCadence} onChange={(e) => setSchedCadence(e.target.value as ScheduledOrderCadence)}>
-                        <option value="daily">Every day</option>
-                        <option value="weekdays">Weekdays</option>
-                        <option value="weekly">Weekly</option>
-                        <option value="once">Once (next)</option>
-                      </select>
-                      <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)} />
-                      <button type="submit" className="secondary-button">Add schedule</button>
-                    </form>
-                  )}
-                  {scheduleState && scheduleState.rules.length > 0 ? (
-                    <div className="schedule-pills-list">
-                      {scheduleState.rules.map((rule) => (
-                        <div key={rule.id} className={`schedule-rule-pill ${rule.enabled ? "" : "is-paused"}`}>
-                          <div>
-                            <strong>{rule.prompt}</strong>
-                            <small>
-                              <code>{rule.id}</code> · {rule.cadence} @ {rule.run_time} · Next: {dates.format(new Date(rule.next_run_at))}
-                              {rule.runs_completed > 0 ? ` · Ran ${rule.runs_completed}×` : ""}
-                              {rule.last_order_id ? ` (Last: ${rule.last_order_id})` : ""}
-                            </small>
-                          </div>
-                          <div className="schedule-rule-actions">
-                            <button type="button" title={rule.enabled ? "Pause" : "Resume"} onClick={() => void toggleScheduleRule(rule.id, !rule.enabled)}>
-                              {rule.enabled ? <Pause size={12} /> : <Play size={12} />}
-                            </button>
-                            <button type="button" title="Delete schedule" onClick={() => void deleteScheduleRule(rule.id)}>
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="allergen-quickbar-note">
-                      Tip: Type <code>Every day at 07:00 buy 20 L lactose-free milk</code> or click Schedule auto-buy, then press <strong>+1 Day</strong> above to watch it buy live.
-                    </p>
                   )}
                 </div>
+                <button
+                  type="button"
+                  className={`kitchen-setup-toggle ${showSetupDialog ? "is-open" : ""}`}
+                  aria-expanded={showSetupDialog}
+                  onClick={() => setShowSetupDialog((v) => !v)}
+                >
+                  <SlidersHorizontal size={13} />
+                  <span>Keittiö Setup</span>
+                  <ChevronDown size={14} className="setup-chevron" />
+                </button>
               </div>
             )}
 
@@ -1016,8 +986,36 @@ export default function Dashboard() {
                 <div className="message-body">
                   <span className="message-author">Purchasing assistant</span>
                   <div className="bubble welcome">
-                    <strong>What are you sourcing today?</strong>
-                    <p>Click an autonomous scenario below or type any kitchen request (e.g. “20 L of lactose-free milk for Monday” or “1000 L of lactose-free milk for Monday”) to run the 4-step selection, quote-lock, and guardrail engine.</p>
+                    {needsInitialSetup ? (
+                      <>
+                        <strong>First-time kitchen setup — what are your dietaries &amp; priorities?</strong>
+                        <p>
+                          Before we start ordering, let me know if your kitchen needs to <strong>exclude any allergens</strong>{" "}
+                          (milk, gluten, soy, eggs, nuts, fish) and <strong>which purchasing priority</strong> to optimize for
+                          (Authentic Finnish, Lowest CO₂, Lowest Price, Delivery Reliability, or Balanced).
+                        </p>
+                        <div className="welcome-setup-actions">
+                          <button type="button" className="primary-button" onClick={() => setShowSetupDialog(true)}>
+                            <SlidersHorizontal size={13} /> Open Keittiö Setup
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => {
+                              if (!workspace) return;
+                              void persistGuardrails({ ...workspace.guardrails }, true);
+                            }}
+                          >
+                            No allergies · Use Balanced
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <strong>What are you sourcing today?</strong>
+                        <p>Click a quick request below or type what you need (for example: “20 L of lactose-free milk for Monday”) to run the 4-step selection, quote-lock, and guardrail engine.</p>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1132,6 +1130,80 @@ export default function Dashboard() {
               {activity(audit.slice(0, 5))}
               {preview && <p className="panel-footnote">Sample orders · changes reset on reload</p>}
             </section>}
+
+            {view === "overview" && scheduleState && (() => {
+              const simNowMs = clockDisplayNowMs + scheduleState.offset_seconds * 1000;
+              const { slowingForRule } = computeEffectiveClockStepSeconds(clockSpeed, simNowMs, scheduleState.rules);
+              const nextRule = scheduleState.rules
+                .filter((r) => r.enabled)
+                .sort((a, b) => new Date(a.next_run_at).getTime() - new Date(b.next_run_at).getTime())[0];
+              const activeSpeedLabel = CLOCK_SPEEDS.find((s) => s.value === clockSpeed)?.label ?? `${clockSpeed}s/s`;
+              return (
+                <section
+                  className={`panel side-clock-card ${scheduleState.offset_seconds > 0 ? "is-future" : ""} ${clockSpeed > 1 ? "is-fast" : ""} ${slowingForRule ? "is-slowing" : ""}`}
+                  aria-label="Simulation clock controller"
+                >
+                  <button
+                    type="button"
+                    className="side-clock-trigger"
+                    aria-expanded={clockOpen}
+                    onClick={() => setClockOpen((v) => !v)}
+                  >
+                    <span className="side-clock-icon"><Clock size={16} /></span>
+                    <div className="side-clock-meta">
+                      <strong>
+                        <time dateTime={new Date(simNowMs).toISOString()}>{clockTimes.format(new Date(simNowMs))}</time>
+                      </strong>
+                      <small>
+                        {slowingForRule
+                          ? `Slowing near ${slowingForRule.run_time} auto-buy`
+                          : nextRule
+                            ? `Next: ${nextRule.run_time} (${dates.format(new Date(nextRule.next_run_at))})`
+                            : "Helsinki · Click to speed up time"}
+                      </small>
+                    </div>
+                    <span className={`side-clock-badge ${clockSpeed > 1 ? "active" : ""}`}>
+                      {clockSpeed === 0 ? "Paused" : scheduleState.offset_seconds > 0 && clockSpeed === 1 ? formatOffsetLabel(scheduleState.offset_seconds) : activeSpeedLabel}
+                    </span>
+                    <ChevronDown size={15} className={`side-clock-chevron ${clockOpen ? "is-open" : ""}`} />
+                  </button>
+
+                  {clockOpen && (
+                    <div className="side-clock-drawer">
+                      <div className="side-clock-drawer-head">
+                        <span>Playback speed</span>
+                        {scheduleState.offset_seconds > 0 && (
+                          <button type="button" className="text-button" onClick={() => void advanceClock({ reset: true })}>
+                            <RotateCcw size={12} /> Reset to real time ({formatOffsetLabel(scheduleState.offset_seconds)})
+                          </button>
+                        )}
+                      </div>
+                      <div className="side-clock-speeds">
+                        {CLOCK_SPEEDS.map(({ value, label }) => (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-pressed={clockSpeed === value}
+                            className={`clock-speed-btn ${clockSpeed === value ? "is-active" : ""}`}
+                            onClick={() => setClockSpeed(value)}
+                          >
+                            {value > 1 && <FastForward size={11} />}
+                            {value === 0 && <Pause size={11} />}
+                            {value === 1 && <Play size={11} />}
+                            <span>{label}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <p className="side-clock-note">
+                        {slowingForRule
+                          ? `Auto-slowing near ${slowingForRule.run_time} (“${slowingForRule.prompt}”) so you can watch the buy trigger live.`
+                          : "Speeds up time forward and automatically slows down as an active schedule approaches."}
+                      </p>
+                    </div>
+                  )}
+                </section>
+              );
+            })()}
           </aside>
         </div>
 
@@ -1260,28 +1332,32 @@ export default function Dashboard() {
         </div>}
       </main>
 
-      {showOnboarding && (
-        <div className="onboarding-backdrop" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
-          <form className="onboarding-modal" onSubmit={(e) => void saveOnboarding(e)}>
+      {showSetupDialog && workspace && (
+        <div className="onboarding-backdrop" role="dialog" aria-modal="true" aria-labelledby="setup-dialog-title" onClick={(e) => {
+          if (e.target === e.currentTarget) setShowSetupDialog(false);
+        }}>
+          <div className="onboarding-modal">
             <div className="onboarding-head">
               <span className="section-icon"><SlidersHorizontal size={20} /></span>
               <div>
-                <h2 id="onboarding-title">Welcome — set your kitchen defaults</h2>
-                <p>Remembered across sessions so every autonomous buy stays safe and aligned. Change anytime in Overview or Policies.</p>
+                <h2 id="setup-dialog-title">Keittiö Setup — Allergens, Priorities &amp; Schedules</h2>
+                <p>Remembered automatically across your workspace. Category lock + excluded allergens always run first.</p>
               </div>
             </div>
 
             <div className="onboarding-block">
-              <strong>1. Company excluded allergens (always ignored)</strong>
+              <strong>1. Company excluded allergens (high priority)</strong>
               <div className="allergen-quick-chips">
                 {allergens.map(({ name, label, Icon }) => {
-                  const selected = onboardAllergens.includes(name);
+                  const selected = workspace.guardrails.review_allergens.includes(name);
                   return (
                     <button
                       key={name}
                       type="button"
+                      aria-pressed={selected}
+                      disabled={Boolean(activeAction) || sending}
                       className={`allergen-chip ${selected ? "is-excluded" : ""}`}
-                      onClick={() => setOnboardAllergens((prev) => prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name])}
+                      onClick={() => void toggleCompanyAllergen(name)}
                     >
                       <Icon size={13} /> <span>{label}</span>
                     </button>
@@ -1291,24 +1367,19 @@ export default function Dashboard() {
             </div>
 
             <div className="onboarding-block">
-              <strong>2. Kitchen purchasing priorities (pick one or combine several)</strong>
+              <strong>2. Kitchen purchasing priorities (combine one or more)</strong>
               <div className="allergen-quick-chips">
                 {priorityOptions.map(({ id, label, hint, Icon }) => {
-                  const selected = onboardPriorities.includes(id);
+                  const selected = activePriorityList(workspace.guardrails).includes(id);
                   return (
                     <button
                       key={id}
                       type="button"
                       title={hint}
+                      aria-pressed={selected}
+                      disabled={Boolean(activeAction) || sending}
                       className={`priority-chip ${selected ? "is-selected" : ""}`}
-                      onClick={() => {
-                        setOnboardPriorities((prev) => {
-                          if (id === "balanced") return ["balanced"];
-                          const noBal = prev.filter((m) => m !== "balanced");
-                          const next = noBal.includes(id) ? noBal.filter((m) => m !== id) : [...noBal, id];
-                          return next.length ? next : ["balanced"];
-                        });
-                      }}
+                      onClick={() => void toggleCompanyPriority(id)}
                     >
                       <Icon size={13} /> <span>{label}</span>
                     </button>
@@ -1317,14 +1388,77 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="onboarding-actions">
-              <button type="button" className="text-button" onClick={() => {
-                saveStoredPrefs({ onboarded: true, priority_modes: activePriorityList(workspace?.guardrails), review_allergens: workspace?.guardrails.review_allergens ?? [] });
-                setShowOnboarding(false);
-              }}>Skip for now</button>
-              <button type="submit" className="primary-button">Save &amp; start purchasing <ArrowRight size={14} /></button>
+            <div className="onboarding-block">
+              <div className="allergen-quickbar-head">
+                <strong>3. Recurring &amp; timed auto-buys</strong>
+                <button type="button" className="text-button quick-setup-btn" onClick={() => setShowScheduleForm((v) => !v)}>
+                  <Plus size={13} /> {showScheduleForm ? "Close form" : "Schedule auto-buy"}
+                </button>
+              </div>
+              {showScheduleForm && (
+                <form className="schedule-inline-form" onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!schedPrompt.trim()) return;
+                  void createScheduleRule(schedPrompt.trim(), schedCadence, schedTime).then(() => setShowScheduleForm(false));
+                }}>
+                  <input
+                    type="text"
+                    value={schedPrompt}
+                    maxLength={200}
+                    placeholder="e.g. 20 L lactose-free milk"
+                    onChange={(e) => setSchedPrompt(e.target.value)}
+                  />
+                  <select value={schedCadence} onChange={(e) => setSchedCadence(e.target.value as ScheduledOrderCadence)}>
+                    <option value="daily">Every day</option>
+                    <option value="weekdays">Weekdays</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="once">Once (next)</option>
+                  </select>
+                  <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)} />
+                  <button type="submit" className="secondary-button">Add</button>
+                </form>
+              )}
+              {scheduleState && scheduleState.rules.length > 0 ? (
+                <div className="schedule-pills-list">
+                  {scheduleState.rules.map((rule) => (
+                    <div key={rule.id} className={`schedule-rule-pill ${rule.enabled ? "" : "is-paused"}`}>
+                      <div>
+                        <strong>{rule.prompt}</strong>
+                        <small>
+                          <code>{rule.id}</code> · {rule.cadence} @ {rule.run_time} · Next: {dates.format(new Date(rule.next_run_at))}
+                          {rule.runs_completed > 0 ? ` · Ran ${rule.runs_completed}×` : ""}
+                        </small>
+                      </div>
+                      <div className="schedule-rule-actions">
+                        <button type="button" title={rule.enabled ? "Pause" : "Resume"} onClick={() => void toggleScheduleRule(rule.id, !rule.enabled)}>
+                          {rule.enabled ? <Pause size={12} /> : <Play size={12} />}
+                        </button>
+                        <button type="button" title="Delete schedule" onClick={() => void deleteScheduleRule(rule.id)}>
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="allergen-quickbar-note">
+                  Tip: Click <strong>Schedule auto-buy</strong> or type <code>Every day at 07:00 buy 20 L lactose-free milk</code>, then speed up the clock below Recent orders to watch it buy live.
+                </p>
+              )}
             </div>
-          </form>
+
+            <div className="onboarding-actions">
+              <button type="button" className="primary-button" onClick={() => {
+                saveStoredPrefs({
+                  onboarded: true,
+                  priority_modes: activePriorityList(workspace.guardrails),
+                  review_allergens: workspace.guardrails.review_allergens,
+                });
+                setNeedsInitialSetup(false);
+                setShowSetupDialog(false);
+              }}>Done</button>
+            </div>
+          </div>
         </div>
       )}
 

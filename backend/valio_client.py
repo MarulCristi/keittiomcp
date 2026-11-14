@@ -705,6 +705,7 @@ class ClockAdvanceRequest(BaseModel):
     days: Annotated[int, Field(ge=0, le=30)] = 0
     hours: Annotated[int, Field(ge=0, le=240)] = 0
     minutes: Annotated[int, Field(ge=0, le=1440)] = 0
+    seconds: Annotated[int, Field(ge=0, le=86400)] = 0
     jump_to_next_schedule: bool = False
     reset: bool = False
 
@@ -3551,7 +3552,7 @@ class ValioClient:
                     diff = (earliest - current_sim).total_seconds()
                     delta_secs = max(60, int(diff) + 60)
             else:
-                delta_secs = request.days * 86400 + request.hours * 3600 + request.minutes * 60
+                delta_secs = request.days * 86400 + request.hours * 3600 + request.minutes * 60 + request.seconds
 
             new_offset = offset + delta_secs
             target_sim = real_now + timedelta(seconds=new_offset)

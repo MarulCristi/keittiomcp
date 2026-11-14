@@ -336,14 +336,14 @@ export function createBrowserPreview() {
       schedules = schedules.filter((r) => r.id !== id);
       response = scheduleSnapshot();
     } else if (route === "clock/advance" && method === "POST") {
-      const req = body as { days?: number; hours?: number; minutes?: number; jump_to_next_schedule?: boolean; reset?: boolean };
+      const req = body as { days?: number; hours?: number; minutes?: number; seconds?: number; jump_to_next_schedule?: boolean; reset?: boolean };
       if (req.reset) {
         offsetSeconds = 0;
         record(actor(), "Reset simulated clock", "completed", "Returned clock to live real-time.");
         response = { ...scheduleSnapshot(), executed_runs: [] } satisfies ClockAdvanceResponse;
       } else {
         const currentSim = simulatedNow();
-        let deltaSecs = ((req.days ?? 0) * 86400) + ((req.hours ?? 0) * 3600) + ((req.minutes ?? 0) * 60);
+        let deltaSecs = ((req.days ?? 0) * 86400) + ((req.hours ?? 0) * 3600) + ((req.minutes ?? 0) * 60) + (req.seconds ?? 0);
         if (req.jump_to_next_schedule) {
           const enabled = schedules.filter((r) => r.enabled).sort((a, b) => a.next_run_at.localeCompare(b.next_run_at));
           deltaSecs = enabled.length

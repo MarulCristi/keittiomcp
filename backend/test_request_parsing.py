@@ -303,6 +303,8 @@ class CatalogAndErrorTests(unittest.TestCase):
         self.assertEqual(rule.run_time, "07:00")
         self.assertIn("milk", rule.prompt.lower())
 
+        tick = self.client.advance_clock(ClockAdvanceRequest(seconds=45))
+        self.assertGreaterEqual(tick.offset_seconds, 45)
         adv = self.client.advance_clock(ClockAdvanceRequest(days=1))
         self.assertEqual(len(adv.executed_runs), 1)
         self.assertIsNotNone(adv.executed_runs[0].execution.order)
