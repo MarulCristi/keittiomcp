@@ -622,6 +622,7 @@ button:disabled { opacity: .5; }
 
 /* Dark Theme Support (strokeless Nordic midnight palette) */
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --background: #0b1520;
   --paper: #0b1520;
   --surface: #132232;
@@ -663,8 +664,17 @@ button:disabled { opacity: .5; }
   --orange-900: #ffd0b6;
 }
 :root[data-theme="dark"] .topbar { background: #08182b; }
+:root[data-theme="dark"] .brand-mcp { color: #eef4fb; }
+:root[data-theme="dark"] .control-nav button { color: #9ec0dc; }
+:root[data-theme="dark"] .control-nav button:hover { color: #ffffff; background: #132a45; }
+:root[data-theme="dark"] .control-nav button[aria-current] { color: #ffffff; }
 :root[data-theme="dark"] .header-wave { fill: #08182b; background: var(--background); }
 :root[data-theme="dark"] .mode-controls .secondary-button { background: #182e46; color: #e5eef5; border: 0; }
+:root[data-theme="dark"] .metric-icon,
+:root[data-theme="dark"] .primary-button,
+:root[data-theme="dark"] .count,
+:root[data-theme="dark"] .settings-actions .secondary-button,
+:root[data-theme="dark"] .approval-card .queue-actions button:last-child { color: #0b1520; }
 :root[data-theme="dark"] .panel,
 :root[data-theme="dark"] .bubble { box-shadow: 0 6px 22px rgb(0 0 0 / .36); }
 :root[data-theme="dark"] .chat-content { background: #0e1b29; }
@@ -672,12 +682,33 @@ button:disabled { opacity: .5; }
 :root[data-theme="dark"] .bubble.welcome { background: var(--surface); color: var(--ink); }
 :root[data-theme="dark"] .user-message .bubble { background: #1e3f61; color: #f3f8fc; }
 :root[data-theme="dark"] .composer { background: var(--surface); border-color: var(--border); }
-:root[data-theme="dark"] .composer input { color: var(--ink); background: transparent; }
+:root[data-theme="dark"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea,
+:root[data-theme="dark"] .request-fields input,
+:root[data-theme="dark"] .request-fields select,
+:root[data-theme="dark"] .agent-field input,
+:root[data-theme="dark"] .agent-field select,
+:root[data-theme="dark"] .event-filters input,
+:root[data-theme="dark"] .event-filters select,
+:root[data-theme="dark"] .quantity-row input,
+:root[data-theme="dark"] .delivery-field input { background: #1a2d42; color: #e5eef5; border: 0; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .12); color-scheme: dark; }
+:root[data-theme="dark"] input::placeholder,
+:root[data-theme="dark"] textarea::placeholder { color: #7b95aa; }
+:root[data-theme="dark"] select option { background: #132232; color: #e5eef5; }
+:root[data-theme="dark"] input[type="checkbox"],
+:root[data-theme="dark"] input[type="radio"] { accent-color: var(--turquoise-400); color-scheme: dark; }
+:root[data-theme="dark"] .composer input { color: var(--ink); background: transparent; box-shadow: none; }
 :root[data-theme="dark"] .prompts button,
 :root[data-theme="dark"] .secondary-button,
 :root[data-theme="dark"] .setup-summary-pill,
 :root[data-theme="dark"] .allergen-chip,
-:root[data-theme="dark"] .priority-chip { background: #1a2d42; color: var(--ink); }
+:root[data-theme="dark"] .priority-chip,
+:root[data-theme="dark"] .scenario-buttons button,
+:root[data-theme="dark"] .review-facts,
+:root[data-theme="dark"] .queue-card,
+:root[data-theme="dark"] .activity-entry,
+:root[data-theme="dark"] .order-products { background: #1a2d42; color: var(--ink); border: 0; }
 :root[data-theme="dark"] .kitchen-setup-toggle { background: var(--electric-600); color: #ffffff; }
 :root[data-theme="dark"] .kitchen-schedule-strip { border-top-color: rgb(255 255 255 / .08); }
 :root[data-theme="dark"] .choice-row.is-selected { background: #173628; }
