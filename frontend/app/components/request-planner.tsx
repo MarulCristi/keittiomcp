@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { api, errorMessage, money, type ApiClient, type Allergen, type Product } from "../lib/purchasing";
+import { ThinkingOrb, type OrbState } from "@/components/ui/thinking-orbs";
+import { api, errorMessage, money, type ApiClient, type Allergen, type PriorityMode, type Product } from "../lib/purchasing";
 
 type Option = {
   tier: string;
@@ -28,9 +29,11 @@ export default function RequestPlanner({ request = api, connected, busy, onBusy,
   const [query, setQuery] = useState("");
   const [target, setTarget] = useState("1000");
   const [date, setDate] = useState("");
+  const [priority, setPriority] = useState<PriorityMode>("balanced");
   const [excluded, setExcluded] = useState<Allergen[]>([]);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [error, setError] = useState("");
+  const [thinkingStep, setThinkingStep] = useState(0);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -38,26 +41,41 @@ export default function RequestPlanner({ request = api, connected, busy, onBusy,
     onBusy("plan");
     setError("");
     setPlan(null);
+    setThinkingStep(1);
+    const timer1 = setTimeout(() => setThinkingStep(2), 450);
+    const timer2 = setTimeout(() => setThinkingStep(3), 950);
     try {
-      const params = new URLSearchParams({ query: query.trim(), target_volume_liters_or_kg: target });
+      const params = new URLSearchParams({ query: query.trim(), target_volume_liters_or_kg: target, priority_mode: priority });
       if (date) params.set("requested_date", date);
       excluded.forEach((name) => params.append("exclude_allergens", name));
       setPlan(await request<Plan>(`plan_procurement?${params}`));
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+      setThinkingStep(0);
       onBusy("");
     }
   }
 
   return <section className="panel side-panel request-planner" aria-labelledby="planner-title">
     <h2 id="planner-title">Plan a purchasing request</h2>
-    <p className="review-caption">Enter the ingredient, dietary requirements, total litres or kilograms, and delivery date. Review each returned option before ordering.</p>
+    <p className="review-caption">Enter the ingredient, dietary requirements, total litres or kilograms, kitchen priority, and delivery date. Review each returned option before ordering.</p>
     <form onSubmit={submit}>
       <fieldset disabled={busy}>
         <div className="request-fields">
           <label>Ingredient and requirements<input required maxLength={120} value={query} placeholder="Lactose-free milk" onChange={(event) => { setQuery(event.target.value); setPlan(null); }} /></label>
           <label>Total litres or kilograms<input required type="number" min="0.01" max="100000" step="any" value={target} onChange={(event) => { setTarget(event.target.value); setPlan(null); }} /></label>
+          <label>Kitchen purchasing priority
+            <select className="agent-field" style={{ marginTop: 0, width: "100%", border: "1px solid #bdcfd7", borderRadius: 6, padding: "10px 12px", minHeight: 42, background: "#fff" }} value={priority} onChange={(event) => { setPriority(event.target.value as PriorityMode); setPlan(null); }}>
+              <option value="balanced">Balanced (Reliability + Carbon + Price)</option>
+              <option value="low_carbon">Lowest Carbon Footprint (Sustainability First)</option>
+              <option value="lowest_price">Lowest Price / Cheapness (Budget First)</option>
+              <option value="authentic_finnish">Authentic Finnish Origin (Kotimainen / Key Flag)</option>
+              <option value="highest_reliability">Highest Delivery Reliability (100% On-Time)</option>
+            </select>
+          </label>
           <label>Delivery date<input type="date" value={date} onChange={(event) => { setDate(event.target.value); setPlan(null); }} /></label>
         </div>
         <fieldset className="allergens"><legend>Exclude allergens from this request</legend><div className="allergen-options">
@@ -66,9 +84,22 @@ export default function RequestPlanner({ request = api, connected, busy, onBusy,
           </label>)}
         </div></fieldset>
         <p className="review-caption">Lactose-free products may contain milk. Allergens selected here are excluded from this request.</p>
-        <button className="primary-button" type="submit" disabled={!connected || busy}>{busy ? "Working…" : "Find fulfillment options"}</button>
+        <button className="primary-button" type="submit" disabled={!connected || busy}>{busy ? "Thinking & planning…" : "Find fulfillment options"}</button>
       </fieldset>
     </form>
+    {thinkingStep > 0 && <div className="decision-note" role="status" style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 14, background: "#002f6d", color: "#fff", borderRadius: 999, padding: "10px 22px 10px 12px", width: "fit-content" }}>
+      <span className="[&_canvas]:!size-12" style={{ display: "inline-flex" }}>
+        <ThinkingOrb state={(thinkingStep === 1 ? "searching" : thinkingStep === 2 ? "solving" : "shaping") as OrbState} size={64} theme="dark" />
+      </span>
+      <div>
+        <strong style={{ display: "block", fontSize: 13, color: "#fff" }}>
+          {thinkingStep === 1 ? "1. Category & Dietary Filter…" : thinkingStep === 2 ? "2. Live Valio Aimo Price & Stock Lookup…" : `3. Good-Better-Best Pack Math (${priority.replace("_", " ")})…`}
+        </strong>
+        <span style={{ fontSize: 12, color: "rgba(227,240,239,0.82)" }}>
+          {thinkingStep === 1 ? `Routing '${query}' to GS1 category` : thinkingStep === 2 ? "Checking warehouse stock & EUR comparison prices" : `Calculating ceil(${target} L/kg ÷ pack volume)`}
+        </span>
+      </div>
+    </div>}
     {error && <p className="error" role="alert">{error}</p>}
     {plan && <div aria-live="polite">
       <h3 className="review-product-name">{plan.query}</h3>

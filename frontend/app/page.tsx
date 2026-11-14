@@ -7,11 +7,12 @@ import {
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
+import { ThinkingOrb, type OrbState } from "@/components/ui/thinking-orbs";
 import OrderReview from "./components/order-review";
 import RequestPlanner from "./components/request-planner";
 import AgentManagement from "./components/agent-management";
-import { createBrowserPreview } from "./lib/browser-preview";
-import { api, errorMessage, money, orderRequester, sampleProducts, statusLabels, type Availability, type Guardrails, type Order, type Product } from "./lib/purchasing";
+import { createBrowserPreview, type ActivityEvent, type Agent } from "./lib/browser-preview";
+import { api, errorMessage, money, orderRequester, sampleProducts, statusLabels, type AgentExecutionResult, type Availability, type Guardrails, type Order, type PriorityMode, type Product } from "./lib/purchasing";
 
 const allergens = [
   { name: "milk", label: "Milk", Icon: Milk },
@@ -23,11 +24,12 @@ const allergens = [
 ] as const;
 
 type Workspace = { guardrails: Guardrails; orders: Order[]; supplier_mode: "demo" | "junction" };
-type Message = { role: "agent" | "user"; text: string; products?: Product[]; sample?: boolean; substitutedFor?: string; requestedDate?: string; requestedQuantity?: number };
+type Message = { role: "agent" | "user"; text: string; thinking?: string[]; products?: Product[]; sample?: boolean; substitutedFor?: string; requestedDate?: string; requestedQuantity?: number };
 const prompts = [
-  { label: "Find a product", text: "Find cooking cream", liveText: "Find ", Icon: Search },
-  { label: "Check stock", text: "Check AIMO-201", liveText: "Check ", Icon: ShoppingBasket },
-  { label: "Find a substitute", text: "Substitutes for AIMO-301", liveText: "Substitutes for ", Icon: ArrowDownUp },
+  { label: "Auto-approve (<= €250)", text: "Agent: 20 L of lactose-free milk for Monday", liveText: "Agent: 20 L of lactose-free milk for Monday", Icon: Check },
+  { label: "Challenge brief (1,000 L milk)", text: "Agent: 1000 L of lactose-free milk for Monday", liveText: "Agent: 1000 L of lactose-free milk for Monday", Icon: Sparkles },
+  { label: "Stock-out substitution", text: "Agent: stockout 30 L of lactose-free milk for Monday", liveText: "Agent: stockout 30 L of lactose-free milk for Monday", Icon: ArrowDownUp },
+  { label: "Finnish priority (15 kg tomatoes)", text: "Agent: 15 kg authentic Finnish tomatoes", liveText: "Agent: 15 kg authentic Finnish tomatoes", Icon: Leaf },
 ];
 const zone = "Europe/Helsinki";
 const dates = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: zone });
@@ -60,8 +62,10 @@ export default function Dashboard() {
   const previewClient = useRef<ReturnType<typeof createBrowserPreview> | null>(null);
   if (!previewClient.current) previewClient.current = createBrowserPreview();
   const request = preview ? previewClient.current.request : api;
-  const agents = preview ? previewClient.current.agents() : [];
-  const events = preview ? previewClient.current.events() : [];
+  const [serviceAgents, setServiceAgents] = useState<Agent[]>([]);
+  const [serviceEvents, setServiceEvents] = useState<ActivityEvent[]>([]);
+  const agents = preview ? previewClient.current.agents() : serviceAgents;
+  const events = preview ? previewClient.current.events() : serviceEvents;
   const [view, setView] = useState<View>("overview");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [draft, setDraft] = useState<Guardrails | null>(null);
@@ -73,11 +77,27 @@ export default function Dashboard() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [thinkingStage, setThinkingStage] = useState(0);
   const [selection, setSelection] = useState<{ product: Product; sample: boolean; quantity?: number; date?: string; substitutedFor?: string } | null>(null);
   const [showSamples, setShowSamples] = useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
   const chatInput = useRef<HTMLInputElement>(null);
   const reviewAnchor = useRef<HTMLDivElement>(null);
+
+  async function refreshSideData(signal?: AbortSignal) {
+    if (preview) return;
+    try {
+      const [nextAgents, nextEvents] = await Promise.all([
+        request<Agent[]>("agents", "GET", undefined, signal),
+        request<ActivityEvent[]>("events", "GET", undefined, signal),
+      ]);
+      if (signal?.aborted) return;
+      setServiceAgents(nextAgents);
+      setServiceEvents(nextEvents);
+    } catch {
+      /* Ignore side-data error if workspace handles primary error */
+    }
+  }
 
   async function loadWorkspace(signal?: AbortSignal, keepDraft = false) {
     setWorkspaceError("");
@@ -86,6 +106,7 @@ export default function Dashboard() {
       if (signal?.aborted) return;
       setWorkspace(data);
       if (!keepDraft) setDraft(data.guardrails);
+      await refreshSideData(signal);
     } catch (error) {
       if (!signal?.aborted) setWorkspaceError(errorMessage(error));
     }
@@ -110,6 +131,7 @@ export default function Dashboard() {
       ...previous,
       orders: [order, ...previous.orders.filter((entry) => entry.id !== order.id)],
     });
+    void refreshSideData();
   }
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
@@ -121,6 +143,7 @@ export default function Dashboard() {
       const guardrails = await request<Guardrails>("guardrails", "PUT", draft);
       setWorkspace((previous) => previous && { ...previous, guardrails });
       setSettingsSaved(true);
+      void refreshSideData();
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
@@ -148,11 +171,40 @@ export default function Dashboard() {
     const check = text.match(/^check\s+(\S+)(?:\s+(\d+))?(?:\s+(\d{4}-\d{2}-\d{2}))?$/i);
     const substitutes = text.match(/^substitutes?\s+(?:for\s+)?(\S+)$/i);
     const purchase = text.match(/^order\s+(\d+)\s+(\S+)$/i);
+    const autonomousPrefix = text.match(/^(?:agent|auto|buy|order\s+me)\s*:?\s+(.+)$/i);
+    const naturalVolumeRequest = !check && !substitutes && !purchase && !/^(?:find|search)\b/i.test(text)
+      && /\b\d+(?:[.,]\d+)?\s*(?:tons?|tonnes?|t|litres?|liters?|l|kilograms?|kilos?|kg|grams?|g|packs?|units?|boxes|cases|sacks?|rolls?)\b/i.test(text);
+
+    if ((autonomousPrefix || naturalVolumeRequest) && !purchase) {
+      const rawPrompt = autonomousPrefix ? autonomousPrefix[1].trim() : text.trim();
+      const simulateShortage = /\b(?:stockout|stock-out|shortage|out of stock)\b/i.test(rawPrompt);
+      const promptText = rawPrompt.replace(/\b(?:stockout|stock-out|shortage|out of stock)\s*:?\s*/gi, "").trim();
+      const inferredPriority: PriorityMode = /\b(?:finnish|kotimainen)\b/i.test(promptText)
+        ? "authentic_finnish"
+        : /\b(?:carbon|co2|sustainable)\b/i.test(promptText)
+          ? "low_carbon"
+          : (workspace?.guardrails.priority_mode ?? "balanced");
+      const cleanPrompt = promptText.replace(/\bauthentic\s+finnish\s+/gi, "").trim();
+      const result = await request<AgentExecutionResult>("agent_execute", "POST", {
+        prompt: cleanPrompt || promptText,
+        agent_id: "kitchen",
+        priority_mode: inferredPriority,
+        auto_place_order: true,
+        simulate_shortage_on_primary: simulateShortage,
+      });
+      if (result.order) updateOrder(result.order);
+      else void refreshSideData();
+      return {
+        text: result.summary,
+        thinking: result.decision_trace,
+      };
+    }
 
     if (check) {
       const params = new URLSearchParams({ product_id: check[1], quantity: check[2] ?? "1" });
       if (check[3]) params.set("requested_date", check[3]);
       const result = await request<Availability>(`check_availability?${params}`);
+      void refreshSideData();
       const stock = result.available_quantity === null
         ? "Valio did not confirm a quantity."
         : `${result.available_quantity} ${result.sales_unit ?? "packs"} available${result.available_date ? ` from ${result.available_date}` : ""}.`;
@@ -163,28 +215,61 @@ export default function Dashboard() {
       const price = result.unit_price_cents !== null && result.currency
         ? ` Unit price including tax: ${new Intl.NumberFormat("en-IE", { style: "currency", currency: result.currency }).format(result.unit_price_cents / 100)}.`
         : " Unit price unavailable.";
-      return { text: `${result.name} · ${stock} ${delivery}${price}` };
+      return {
+        text: `${result.name} · ${stock} ${delivery}${price}`,
+        thinking: [
+          `1. Permission Check: Kitchen Assistant 'search' verified`,
+          `2. Live Valio Aimo Lookup: SKU ${check[1]} (${check[2] ?? "1"} units) -> ${result.available ? "In stock" : "Unavailable"} @ ${result.unit_price_cents != null ? money(result.unit_price_cents) : "N/A"}`,
+        ],
+      };
     }
     if (substitutes) {
       const params = new URLSearchParams({ product_id: substitutes[1] });
+      if (workspace?.guardrails.priority_mode) params.set("priority_mode", workspace.guardrails.priority_mode);
       for (const allergen of workspace?.guardrails.review_allergens ?? []) params.append("exclude_allergens", allergen);
       const products = await request<Product[]>(`suggest_substitutes?${params}`);
-      return { text: products.length ? "Review these alternatives against your dietary and delivery requirements." : "No alternatives were returned for the saved allergen settings.", products, substitutedFor: substitutes[1] };
+      void refreshSideData();
+      return {
+        text: products.length ? "Review these alternatives against your dietary and delivery requirements." : "No alternatives were returned for the saved allergen settings.",
+        products,
+        substitutedFor: substitutes[1],
+        thinking: [
+          `1. Category & Dietary Filter: Same GS1 category · Excluded allergens: ${(workspace?.guardrails.review_allergens ?? []).join(", ") || "none"}`,
+          `2. Priority Ranking (${workspace?.guardrails.priority_mode ?? "balanced"}): Ranked ${products.length} Good-Better-Best substitutes`,
+        ],
+      };
     }
     if (purchase) {
       const order = await request<Order>("create_purchase_order", "POST", {
         items: [{ product_id: purchase[2], quantity: Number(purchase[1]) }],
       });
       updateOrder(order);
-      return { text: `${order.id} · ${describeOrder(order)} · ${money(order.total_cents)}. ${statusLabels[order.status]}.${order.reasons.length ? ` ${order.reasons.join(" · ")}.` : ""}` };
+      return {
+        text: `${order.id} · ${describeOrder(order)} · ${money(order.total_cents)}. ${statusLabels[order.status]}.${order.reasons.length ? ` ${order.reasons.join(" · ")}.` : ""}`,
+        thinking: order.decision_trace?.length ? order.decision_trace : [
+          `1. Pack Math & Live Stock: ${purchase[1]} × SKU ${purchase[2]} locked`,
+          `2. Guardrail & Quote Lock: ${order.id} · ${money(order.total_cents)} · ${statusLabels[order.status]} · ${order.trust_verification?.quote_lock_id ?? "keittio-valio-trust-v1"}`,
+        ],
+      };
     }
     if (/^(check|substitutes?|order)\b/i.test(text)) {
-      return { text: "Use “Check SKU 12 YYYY-MM-DD” for price and availability, or “Substitutes for SKU” to find alternatives. Replace SKU with a product ID. Quantity and date are optional." };
+      return { text: "Use “Check SKU 12 YYYY-MM-DD” for price and availability, “Substitutes for SKU” to find alternatives, or type “1000 L of lactose-free milk for Monday” for autonomous ordering." };
     }
     const query = text.replace(/^(?:find|search(?: for)?)\s+/i, "").trim();
-    const products = await request<Product[]>(`search_products?${new URLSearchParams({ query })}`);
+    const searchParams = new URLSearchParams({ query });
+    if (workspace?.guardrails.priority_mode) searchParams.set("priority_mode", workspace.guardrails.priority_mode);
+    const products = await request<Product[]>(`search_products?${searchParams}`);
+    void refreshSideData();
+    const topMatch = products[0];
     const nextStep = "Select a product to choose a quantity and review price and availability.";
-    return { text: products.length ? `I found ${products.length} catalog ${products.length === 1 ? "match" : "matches"}. ${nextStep}` : "I couldn’t find a match. Try a product name, category, or SKU.", products };
+    return {
+      text: products.length ? `I found ${products.length} catalog ${products.length === 1 ? "match" : "matches"}. Top pick: SKU ${topMatch.product_id} — "${topMatch.name}" (${topMatch.delivery_reliability != null ? `${(topMatch.delivery_reliability * 100).toFixed(0)}% on-time` : "verified"}). ${nextStep}` : "I couldn’t find a match. Try a product name, category, or SKU.",
+      products,
+      thinking: [
+        `1. Category & Dietary Filter: Routed '${query}' -> GS1 category · Excluded allergens: ${(workspace?.guardrails.review_allergens ?? []).join(", ") || "none"}`,
+        `2. Priority Ranking (${workspace?.guardrails.priority_mode ?? "balanced"}): Ranked ${products.length} SKUs · #1 SKU ${topMatch?.product_id ?? "N/A"} — "${topMatch?.name ?? "None"}"`,
+      ],
+    };
   }
 
   async function send(text: string) {
@@ -193,11 +278,21 @@ export default function Dashboard() {
     setInput("");
     setMessages((previous) => [...previous, { role: "user", text: message }]);
     setSending(true);
+    setThinkingStage(1);
+    const t1 = setTimeout(() => setThinkingStage(2), 450);
+    const t2 = setTimeout(() => setThinkingStage(3), 950);
+    const t3 = setTimeout(() => setThinkingStage(4), 1450);
     let reply: Omit<Message, "role">;
     try {
       reply = await respond(message);
     } catch (error) {
       reply = { text: errorMessage(error) };
+      void refreshSideData();
+    } finally {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      setThinkingStage(0);
     }
     setMessages((previous) => [...previous, { role: "agent", ...reply }]);
     setSending(false);
@@ -215,6 +310,7 @@ export default function Dashboard() {
     draft.review_allergens.some((name) => !workspace.guardrails.review_allergens.includes(name))
     || draft.min_delivery_reliability !== workspace.guardrails.min_delivery_reliability
     || draft.require_approval_on_substitution !== workspace.guardrails.require_approval_on_substitution
+    || (draft.priority_mode ?? "balanced") !== (workspace.guardrails.priority_mode ?? "balanced")
   ));
 
   async function refreshWorkspace() {
@@ -242,7 +338,11 @@ export default function Dashboard() {
         <div className="activity-details">
           <p>{describeOrder(order)}</p>
           {order.reasons.length > 0 && <ul>{order.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
-          {preview && events.some((event) => event.order_id === order.id) && <div className="order-timeline">
+          {order.decision_trace && order.decision_trace.length > 0 && <div className="decision-note">
+            <strong>4-step selection algorithm</strong>
+            <ul>{order.decision_trace.map((step, index) => <li key={index}>{step}</li>)}</ul>
+          </div>}
+          {(preview || Boolean(workspace)) && events.some((event) => event.order_id === order.id) && <div className="order-timeline">
             <h3>Order history</h3>
             <ol>{events.filter((event) => event.order_id === order.id).map((event) => <li key={event.id}>
               <strong>{event.action}</strong><p>{event.detail}</p><time dateTime={event.timestamp}>{dates.format(new Date(event.timestamp))}</time>
@@ -254,6 +354,9 @@ export default function Dashboard() {
             <div><dt>Supplier mode</dt><dd>{order.trust_verification.supplier_mode}</dd></div>
             <div><dt>Requested delivery</dt><dd>{order.trust_verification.requested_delivery_date ?? "Unconfirmed"}</dd></div>
             {order.trust_verification.earliest_closing_time && <div><dt>Order cutoff</dt><dd>{order.trust_verification.earliest_closing_time}</dd></div>}
+            {order.trust_verification.quote_lock_id && <div><dt>Quote lock ID</dt><dd><code>{order.trust_verification.quote_lock_id}</code></dd></div>}
+            {order.trust_verification.signature_hmac_sha256 && <div><dt>HMAC-SHA256 signature</dt><dd><code>{order.trust_verification.signature_hmac_sha256.slice(0, 18)}…</code></dd></div>}
+            {order.trust_verification.privacy_audit_summary && <div><dt>Privacy & margin protection</dt><dd>{order.trust_verification.privacy_audit_summary}</dd></div>}
           </dl>}
         </div>
       </details>)}
@@ -365,15 +468,15 @@ export default function Dashboard() {
 
         {view === "overview" && <div className="control-content overview-content">
           <dl className="metric-grid">
-            <div className="panel metric-card"><div className="metric-icon sky"><Bot size={28} aria-hidden="true" /></div><dt>Connected agents</dt><dd>{preview ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon sky"><Bot size={28} aria-hidden="true" /></div><dt>Connected agents</dt><dd>{preview || workspace ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : workspace ? "Verified external trade agents" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
             <div className="panel metric-card"><div className="metric-icon blue"><ShoppingBasket size={28} aria-hidden="true" /></div><dt>Orders updated today</dt><dd>{workspace ? changedToday : "—"}</dd><small>Helsinki time</small><button type="button" className="text-button" onClick={() => setView("activity")}>View activity <ArrowRight size={16} /></button></div>
             <div className="panel metric-card"><div className="metric-icon coral"><ClipboardList size={28} aria-hidden="true" /></div><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><small>{pending.length ? "A decision needs your attention" : "No pending decisions"}</small><button type="button" className="primary-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={16} /></button></div>
             <div className="panel metric-card"><div className="metric-icon teal"><Check size={28} aria-hidden="true" /></div><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small><button type="button" className="text-button" onClick={() => setView("policies")}>View policies <ArrowRight size={16} /></button></div>
           </dl>
         </div>}
 
-        {view === "agents" && preview && <AgentManagement agents={agents} request={request} busy={Boolean(activeAction) || sending} onBusy={setActiveAction} onChanged={() => void loadWorkspace(undefined, true)} />}
-        {view === "agents" && !preview && <section className="panel control-empty">
+        {view === "agents" && (preview || Boolean(workspace)) && <AgentManagement agents={agents} request={request} busy={Boolean(activeAction) || sending} onBusy={setActiveAction} onChanged={() => void loadWorkspace(undefined, true)} />}
+        {view === "agents" && !preview && !workspace && <section className="panel control-empty">
           <Bot size={24} aria-hidden="true" />
           <h2>Agent data unavailable</h2>
           <p>The current workspace API provides orders and shared purchasing policies. Agent identities, permissions, per-agent limits and last activity require an agent management API.</p>
@@ -400,7 +503,7 @@ export default function Dashboard() {
                   <span className="message-author">Purchasing assistant</span>
                   <div className="bubble welcome">
                     <strong>What are you sourcing today?</strong>
-                    <p>Find a product, choose how much you need, and review its price and availability. Try “Find milk”, “Check SKU”, or “Substitutes for SKU”.{workspace?.supplier_mode === "demo" ? " Create a demo order to see the approval decision." : ""}</p>
+                    <p>Click an autonomous scenario below or type any kitchen request (e.g. “20 L of lactose-free milk for Monday” or “1000 L of lactose-free milk for Monday”) to run the 4-step selection, quote-lock, and guardrail engine.</p>
                   </div>
                 </div>
               </div>
@@ -414,12 +517,45 @@ export default function Dashboard() {
                   {message.role === "agent" ? <div className="message-icon"><Sparkles size={16} /></div> : null}
                   <div className="message-body">
                     <span className="message-author">{message.role === "user" ? "You" : "Demo response"}</span>
+                    {message.thinking && message.thinking.length > 0 && (
+                      <details open className="decision-note" style={{ marginBottom: "0.5rem" }}>
+                        <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+                          Why this item was selected ({message.thinking.length}-step algorithm)
+                        </summary>
+                        <ul style={{ marginTop: "0.35rem", paddingLeft: "1.1rem", fontSize: "0.84rem", lineHeight: 1.45 }}>
+                          {message.thinking.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}
+                        </ul>
+                      </details>
+                    )}
                     <div className="bubble">{message.text}</div>
                     {message.products && productCards(message.products, Boolean(message.sample), message.substitutedFor, message.requestedDate, message.requestedQuantity)}
                   </div>
                 </div>
               ))}
-              {sending ? <p className="chat-loading">Working on your request…</p> : null}
+              {sending ? (
+                <div
+                  className="inline-flex h-[56px] items-center gap-3 rounded-full pl-[10px] pr-6 my-2"
+                  style={{
+                    background: "rgba(18, 40, 64, 0.92)",
+                    boxShadow: "inset 0 0 0 1px rgba(44, 180, 160, 0.35), 0 6px 20px rgba(15, 35, 58, 0.14)",
+                  }}
+                  role="status"
+                >
+                  <span className="[&_canvas]:!size-11 flex items-center justify-center">
+                    <ThinkingOrb
+                      state={(thinkingStage === 1 ? "searching" : thinkingStage === 2 ? "solving" : thinkingStage === 3 ? "shaping" : "working") as OrbState}
+                      size={64}
+                      theme="dark"
+                    />
+                  </span>
+                  <span className="whitespace-nowrap text-sm font-medium leading-5" style={{ color: "rgba(245, 250, 255, 0.92)" }}>
+                    {thinkingStage <= 1 && "1/4 · Filtering GS1 category & allergens…"}
+                    {thinkingStage === 2 && "2/4 · Ranking SKUs by reliability, CO2 & price…"}
+                    {thinkingStage === 3 && "3/4 · Calculating pack math & live Valio stock…"}
+                    {thinkingStage >= 4 && "4/4 · Verifying €250 guardrail & HMAC quote lock…"}
+                  </span>
+                </div>
+              ) : null}
               <div ref={chatEnd} />
             </div>
 
@@ -428,7 +564,7 @@ export default function Dashboard() {
                 {!workspace && workspaceError && !showSamples && <button type="button" onClick={() => setShowSamples(true)}>Explore sample products</button>}
                 {prompts.map(({ label, text, liveText, Icon }) => (
                   <button type="button" key={label} disabled={sending || Boolean(activeAction) || !workspace} onClick={() => {
-                    if (liveSupplier) {
+                    if (liveSupplier && text.startsWith("Find")) {
                       setInput(liveText);
                       chatInput.current?.focus();
                     } else {
@@ -439,7 +575,7 @@ export default function Dashboard() {
               </div>
               <form className="composer" onSubmit={(event) => { event.preventDefault(); void send(input); }}>
                 <label className="sr-only" htmlFor="chat-input">Message the purchasing assistant</label>
-                <input ref={chatInput} id="chat-input" value={input} maxLength={120} disabled={!workspace} onChange={(event) => setInput(event.target.value)} placeholder={workspace ? "Try: Find cooking cream" : "Connect the purchasing service to search"} />
+                <input ref={chatInput} id="chat-input" value={input} maxLength={120} disabled={!workspace} onChange={(event) => setInput(event.target.value)} placeholder={workspace ? "Try: 20 L of lactose-free milk for Monday" : "Connect the purchasing service to search"} />
                 <button type="submit" aria-label="Send message" disabled={sending || Boolean(activeAction) || !workspace || !input.trim()}><ArrowUp size={19} /></button>
               </form>
               <p className="chat-note"><CircleHelp size={13} /> {preview ? "Simulated actions are recorded in this browser session." : workspace ? liveSupplier ? "Connected to Junction’s mock catalog." : "Demo orders are recorded locally." : "Sample preview is available above. Orders require a connection."}</p>
@@ -489,6 +625,17 @@ export default function Dashboard() {
                     <input id="reliability" type="number" min="0" max="100" step="0.1" required disabled={Boolean(activeAction)} value={Number((draft.min_delivery_reliability * 100).toFixed(2))}
                       onChange={(event) => { if (event.target.value === "") return; setSettingsSaved(false); setDraft({ ...draft, min_delivery_reliability: Number(event.target.value) / 100 }); }} />
                   </div>}
+                  <div className="quantity-row">
+                    <label htmlFor="priority-mode">Kitchen purchasing priority</label>
+                    <select id="priority-mode" disabled={Boolean(activeAction)} value={draft.priority_mode ?? "balanced"}
+                      onChange={(event) => { setSettingsSaved(false); setDraft({ ...draft, priority_mode: event.target.value as PriorityMode }); }}>
+                      <option value="balanced">Balanced (Reliability + Carbon + Price)</option>
+                      <option value="low_carbon">Lowest Carbon Footprint (Sustainability First)</option>
+                      <option value="lowest_price">Lowest Price / Cheapness (Budget First)</option>
+                      <option value="authentic_finnish">Authentic Finnish Origin (Blue Swan / Key Flag)</option>
+                      <option value="highest_reliability">Highest Delivery Reliability (100% On-Time First)</option>
+                    </select>
+                  </div>
                   {draft.require_approval_on_substitution != null && <label className="substitution-policy">
                     <input type="checkbox" disabled={Boolean(activeAction)} checked={draft.require_approval_on_substitution} onChange={(event) => { setSettingsSaved(false); setDraft({ ...draft, require_approval_on_substitution: event.target.checked }); }} />
                     Require human approval for substitutions

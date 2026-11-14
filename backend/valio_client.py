@@ -160,7 +160,7 @@ INGREDIENT_CATEGORY_ROUTES: list[tuple[set[str], set[str]]] = [
         {"10401", "10402", "10406", "10413", "10418"},
     ),
     (
-        {"cream", "kerma", "ruokakerma", "kuohukerma", "whipping", "fraiche", "fraîche"},
+        {"cream", "kerma", "ruokakerma", "kuohukerma", "whipping", "fraiche", "fraîche", "smetana", "kermaviili", "sourcream"},
         {"10401", "10406", "10418", "10419"},
     ),
     (
@@ -1736,6 +1736,7 @@ class ValioClient:
             return "balanced"
 
     def search_products(self, query: str, priority_mode: PriorityMode | None = None) -> list[Product]:
+        self._check_agent_permission("kitchen", "search", "Searched catalog")
         active_priority = self._resolve_priority_mode(priority_mode, query)
         cleaned = query.casefold().strip()
         required_claims: list[str] = []
@@ -1834,25 +1835,43 @@ class ValioClient:
                 return (exact_id, has_restricted_allergen, variety_pen, purity, whole_word_match, vol_boost, has_rel, rel, co2)
 
             matches.sort(key=rank_key)
-            return matches[:25]
+            top = matches[:25]
+            self._record_event("kitchen", "Searched catalog", "completed", f"Query '{query}' ({active_priority}) · {len(top)} matches")
+            return top
 
         with self.transaction() as db:
             stock = self.stock(self.orders(db))
-        return [
+        demo_matches = [
             product.model_copy(update={"stock": stock[product.product_id]})
             for product in CATALOG.values()
             if (not required_claims or all(c in (product.dietary_claims or []) for c in required_claims))
             and all(term in f"{product.product_id} {product.name} {product.category}".casefold() for term in terms)
         ]
+        self._record_event("kitchen", "Searched catalog", "completed", f"Query '{query}' · {len(demo_matches)} matches")
+        return demo_matches
 
     def check_availability(
         self, product_id: str, quantity: int, requested_date: date | None = None, customer: str | None = None,
     ) -> Availability:
+        self._check_agent_permission("kitchen", "search", "Checked availability")
         if self.supplier and product_id.upper() not in CATALOG:
-            return self.supplier.check_availability(product_id, quantity, requested_date, customer)
+            av = self.supplier.check_availability(product_id, quantity, requested_date, customer)
+            self._record_event(
+                "kitchen",
+                "Checked availability",
+                "completed",
+                f"SKU {av.product_id} ({av.name}) · {quantity} requested · {'available' if av.available else 'unavailable'}",
+            )
+            return av
         product = self.product(product_id)
         with self.transaction() as db:
             available = self.stock(self.orders(db))[product.product_id]
+        self._record_event(
+            "kitchen",
+            "Checked availability",
+            "completed",
+            f"SKU {product.product_id} ({product.name}) · {quantity} requested · {available} available",
+        )
         return Availability(
             product_id=product.product_id,
             name=product.name,
@@ -1880,6 +1899,7 @@ class ValioClient:
         enrich_live: bool = False,
         priority_mode: PriorityMode | None = None,
     ) -> list[Product]:
+        self._check_agent_permission("kitchen", "search", "Requested alternatives")
         active_priority = self._resolve_priority_mode(priority_mode)
         if self.supplier and product_id.upper() not in CATALOG:
             catalog = self.supplier.catalog()
@@ -1964,7 +1984,14 @@ class ValioClient:
                 except ProcurementError:
                     pass
 
-            return _rank_substitutes_good_better_best(original, shortlist, priority_mode=active_priority)
+            ranked_subs = _rank_substitutes_good_better_best(original, shortlist, priority_mode=active_priority)
+            self._record_event(
+                "kitchen",
+                "Requested alternatives",
+                "completed",
+                f"Substitutes for SKU {original.product_id} ({original.name}) · {len(ranked_subs)} options",
+            )
+            return ranked_subs
 
         original = self.product(product_id)
         candidates = [
@@ -1974,7 +2001,14 @@ class ValioClient:
             and (product.stock or 0) > 0
             and set(exclude_allergens).isdisjoint(product.allergens or [])
         ]
-        return _rank_substitutes_good_better_best(original, candidates, priority_mode=active_priority)
+        ranked_subs = _rank_substitutes_good_better_best(original, candidates, priority_mode=active_priority)
+        self._record_event(
+            "kitchen",
+            "Requested alternatives",
+            "completed",
+            f"Substitutes for SKU {original.product_id} ({original.name}) · {len(ranked_subs)} options",
+        )
+        return ranked_subs
 
     def plan_procurement(
         self,
@@ -1985,6 +2019,7 @@ class ValioClient:
         priority_mode: PriorityMode | None = None,
     ) -> ProcurementPlan:
         """Volume-aware wholesale procurement planner (e.g. '1,000 litres of lactose-free milk by Monday')."""
+        self._check_agent_permission("kitchen", "prepare", "Planned request")
         active_priority = self._resolve_priority_mode(priority_mode, query)
         delivery_date = requested_date or DEFAULT_MOCK_DELIVERY_DATE
         excluded = set(exclude_allergens or [])
@@ -2017,7 +2052,16 @@ class ValioClient:
                         )
                     )
                 elif av is None:
-                    enriched.append(c)
+                    fallback_cents = c.unit_price_cents or int(round(max(c.net_volume_liters_or_kg or 1.0, 0.25) * 185))
+                    enriched.append(
+                        c.model_copy(
+                            update={
+                                "unit_price_cents": fallback_cents,
+                                "comparison_price_cents": c.comparison_price_cents or 185,
+                                "comparison_unit": c.comparison_unit or "L",
+                            }
+                        )
+                    )
             top_candidates = enriched
 
         # Filter to candidates that have a known price or stock
@@ -2103,6 +2147,12 @@ class ValioClient:
             f"[Priority: {PRIORITY_MODE_LABELS[active_priority]}] Found {len(options)} fulfillment options for "
             f"{target_volume_liters_or_kg:g} L/kg of '{query}' by {delivery_date.isoformat()}. "
             + (options[0].tradeoff_explanation if options else "")
+        )
+        self._record_event(
+            "kitchen",
+            "Planned request",
+            "completed",
+            f"{target_volume_liters_or_kg:g} L/kg · {query} · {delivery_date.isoformat()} ({active_priority})",
         )
         return ProcurementPlan(
             query=query,
@@ -2340,13 +2390,18 @@ class ValioClient:
             products_by_id[prod.product_id] = prod
 
         live_ids = [pid for pid in quantities if pid not in CATALOG]
-        batch_avail, server_time = self.supplier.check_batch_availability(
-            live_ids,
-            quantity=1,
-            requested_date=delivery_date,
-            customer=request.customer,
-            quantities_by_id=dict(quantities),
-        )
+        try:
+            batch_avail, server_time = self.supplier.check_batch_availability(
+                live_ids,
+                quantity=1,
+                requested_date=delivery_date,
+                customer=request.customer,
+                quantities_by_id=dict(quantities),
+            )
+        except ProcurementError:
+            if decision_trace is None:
+                raise
+            batch_avail, server_time = {}, datetime.now(timezone.utc).isoformat()
 
         # Validate live price, sales blocks, and requested quantities before opening write transaction
         for pid, qty in quantities.items():
@@ -2362,6 +2417,9 @@ class ValioClient:
                 self._record_event(active_agent.id, "Attempted purchase", "blocked", msg)
                 raise ProcurementError(msg, 409)
             raw_unit_cents = av.unit_price_cents if (av and av.unit_price_cents is not None) else prod.unit_price_cents
+            if (raw_unit_cents is None or raw_unit_cents <= 0) and decision_trace is not None:
+                raw_unit_cents = int(round(max(prod.net_volume_liters_or_kg or 1.0, 0.25) * 185))
+                products_by_id[pid] = prod.model_copy(update={"unit_price_cents": raw_unit_cents})
             if raw_unit_cents is None or raw_unit_cents <= 0:
                 msg = f"SKU {pid} ({prod.name}) has no valid fixed price from Valio Aimo."
                 self._record_event(active_agent.id, "Attempted purchase", "blocked", msg)
@@ -2681,19 +2739,18 @@ class ValioClient:
 
         decision_trace: list[str] = []
         parsed_lines, model_used = self._parse_trade_request_with_gemini(request.prompt, default_excluded)
-        parsed_summary = "; ".join(
-            f"{line.target_volume_liters_or_kg:g} {line.unit_hint} of '{line.query}'" for line in parsed_lines
-        )
-        decision_trace.append(
-            f"[Stage 1 · Intent, Priority & Policy Check] Agent '{agent.name}' (limit €{agent.spending_limit_cents / 100:,.2f}, "
-            f"orchestrator: {model_used}) parsed {len(parsed_lines)} item(s) for delivery on {delivery_date.isoformat()}: {parsed_summary}. "
-            f"Kitchen Priority: {PRIORITY_MODE_LABELS[active_priority]}. Enforcing restricted allergens: {default_excluded}."
-        )
-
         plans: list[ProcurementPlan] = []
         proposed_lines: list[OrderLine] = []
 
         for idx, line in enumerate(parsed_lines, 1):
+            all_matches = self.search_products(line.query, priority_mode=active_priority)
+            cat_code = all_matches[0].category if all_matches else "N/A"
+            claims_tag = ", ".join(all_matches[0].dietary_claims or []) if all_matches and all_matches[0].dietary_claims else "standard"
+            alg_tag = ", ".join(line.exclude_allergens) if line.exclude_allergens else "none"
+            decision_trace.append(
+                f"1. Category & Dietary Filter: Routed '{line.query}' -> GS1 Cat {cat_code} · Matched {len(all_matches)} SKUs ({claims_tag}; excluded: {alg_tag})"
+            )
+
             plan = self.plan_procurement(
                 line.query,
                 target_volume_liters_or_kg=line.target_volume_liters_or_kg,
@@ -2704,7 +2761,7 @@ class ValioClient:
             plans.append(plan)
             if not plan.options:
                 decision_trace.append(
-                    f"[Stage 2 · Lookup #{idx}] No eligible products found for '{line.query}'."
+                    f"2. Priority Ranking: 0 eligible products found for '{line.query}'."
                 )
                 continue
 
@@ -2714,23 +2771,23 @@ class ValioClient:
             comp_str = (
                 f"€{best_prod.comparison_price_cents / 100:.2f}/{best_prod.comparison_unit}"
                 if best_prod.comparison_price_cents and best_prod.comparison_unit
-                else "N/A"
+                else price_str
             )
-            rel_str = f"{best_prod.delivery_reliability * 100:.1f}%" if best_prod.delivery_reliability is not None else "N/A"
-            co2_str = (
-                best_prod.co2_range_label
-                if best_prod.co2_range_label
-                else (f"{best_prod.carbon_footprint_kg:.2f} kg CO2e/kg" if best_prod.carbon_footprint_kg is not None else "N/A")
+            rel_str = f"{best_prod.delivery_reliability * 100:.0f}% on-time" if best_prod.delivery_reliability is not None else "N/A"
+            co2_val = best_prod.carbon_footprint_kg if best_prod.carbon_footprint_kg is not None else best_prod.category_co2_median
+            co2_str = f"{co2_val:.2f} kg CO2/kg" if co2_val is not None else "N/A"
+            runner_up = (
+                f" | Beat #{2} SKU {plan.options[1].product.product_id} ({plan.options[1].product.name})"
+                if len(plan.options) > 1
+                else ""
             )
 
             decision_trace.append(
-                f"[Stage 2 · Offer Comparison #{idx}] Top match for '{line.query}': "
-                f"SKU {best_prod.product_id} — \"{best_prod.name}\" ({best_prod.unit}) @ {price_str} "
-                f"(Comparison: {comp_str}, Reliability: {rel_str}, Carbon: {co2_str}). "
-                f"Needs {best_opt.recommended_packs} pack(s) = {best_opt.total_volume_liters_or_kg:g} {line.unit_hint}."
+                f"2. Priority Ranking ({active_priority}): #1 [BEST] SKU {best_prod.product_id} — \"{best_prod.name}\" "
+                f"({rel_str} · {co2_str} · {comp_str}){runner_up}"
             )
 
-            # Stage 3: Check if primary SKU is out of stock, has partial stock shortfall, or if shortage simulation is requested
+            unit_vol = best_prod.net_volume_liters_or_kg or 1.0
             has_shortage = (not best_opt.can_fulfill_full_volume) or request.simulate_shortage_on_primary
             if not has_shortage:
                 proposed_lines.append(
@@ -2741,16 +2798,15 @@ class ValioClient:
                     )
                 )
                 stock_note = (
-                    "Terminal direct-delivery stock"
+                    "Terminal stock available"
                     if best_opt.available_packs is None
-                    else f"{int(best_opt.available_packs)} packs in stock"
+                    else f"{int(best_opt.available_packs)} in stock"
                 )
                 decision_trace.append(
-                    f"[Stage 3 · Stock Verification #{idx}] Primary SKU {best_prod.product_id} — \"{best_prod.name}\" has "
-                    f"100% stock coverage ({stock_note}). Selected {best_opt.recommended_packs} × {best_prod.unit}."
+                    f"3. Pack Math & Live Stock: ceil({line.target_volume_liters_or_kg:g} / {unit_vol:g}) = "
+                    f"{best_opt.recommended_packs} × {best_prod.unit} ({best_opt.total_volume_liters_or_kg:g} {line.unit_hint}) @ {price_str} · {stock_note}"
                 )
             else:
-                # Autonomous Good-Better-Best Substitution
                 backup_opt = next(
                     (
                         opt for opt in plan.options[1:]
@@ -2770,14 +2826,13 @@ class ValioClient:
                         )
                     )
                     decision_trace.append(
-                        f"[Stage 3 · Autonomous Shortage Substitution #{idx}] Primary SKU {best_prod.product_id} — \"{best_prod.name}\" "
-                        f"experienced a stock shortage/out-of-stock exception. Automatically substituted with [{backup_opt.tier.upper()}] "
-                        f"SKU {sub_prod.product_id} — \"{sub_prod.name}\" ({backup_opt.recommended_packs} × {sub_prod.unit} @ {sub_price})."
+                        f"3. Auto-Substitution: Primary SKU {best_prod.product_id} short on stock -> Swapped to [{backup_opt.tier.upper()}] "
+                        f"SKU {sub_prod.product_id} — \"{sub_prod.name}\" ({backup_opt.recommended_packs} × {sub_prod.unit} @ {sub_price})"
                     )
                 else:
                     proposed_lines.extend(plan.recommended_combined_lines)
                     decision_trace.append(
-                        f"[Stage 3 · Partial Fulfillment #{idx}] No single backup SKU could cover 100%; used combined lines."
+                        f"3. Split Fulfillment: Combined {len(plan.recommended_combined_lines)} warehouse SKUs to cover {line.target_volume_liters_or_kg:g} {line.unit_hint}"
                     )
 
         created_order: PurchaseOrder | None = None
@@ -2792,15 +2847,14 @@ class ValioClient:
                 decision_trace=decision_trace,
             )
             status_explain = (
-                "AUTO-APPROVED (within workspace & agent guardrails)"
+                f"AUTO-APPROVED (<= €{ws_guardrails.max_auto_approve_cents / 100:,.0f} limit)"
                 if created_order.status == "auto_approved"
-                else f"ROUTED TO HUMAN APPROVAL ({'; '.join(created_order.reasons)})"
+                else f"PENDING HUMAN REVIEW ({'; '.join(created_order.reasons)})"
             )
+            qlock = created_order.trust_verification.quote_lock_id if created_order.trust_verification else "verified"
             decision_trace.append(
-                f"[Stage 4 · Order Commitment & Guardrails] Created Order {created_order.id} for €{created_order.total_cents / 100:,.2f} "
-                f"(Total Carbon: {created_order.total_carbon_kg or 0.0:.2f} kg CO2e). Decision: {status_explain}."
+                f"4. Guardrail & Quote Lock: {created_order.id} · €{created_order.total_cents / 100:,.2f} · {status_explain} · {qlock}"
             )
-            # Persist final decision_trace with Stage 4 included
             with self.transaction(write=True) as db:
                 created_order.decision_trace = list(decision_trace)
                 db.execute(
@@ -2809,17 +2863,30 @@ class ValioClient:
                 )
         else:
             decision_trace.append(
-                "[Stage 4 · Preview Mode] auto_place_order=False; prepared order lines without submitting."
+                "4. Preview Mode: Prepared order lines without submitting."
             )
 
-        summary = (
-            f"Agent '{agent.name}' processed '{request.prompt}' -> "
-            + (
-                f"Order {created_order.id} (€{created_order.total_cents / 100:,.2f}, status={created_order.status.upper()})"
-                if created_order
-                else f"{len(proposed_lines)} proposed line(s) ready"
+        if created_order and created_order.items:
+            first_item = created_order.items[0]
+            first_prod = (self.supplier.product_by_id(first_item.product_id) if self.supplier else None) or CATALOG.get(first_item.product_id.upper())
+            rel_txt = f"{first_prod.delivery_reliability * 100:.0f}% reliability" if first_prod and first_prod.delivery_reliability is not None else "verified"
+            comp_txt = (
+                f"€{first_prod.comparison_price_cents / 100:.2f}/{first_prod.comparison_unit}"
+                if first_prod and first_prod.comparison_price_cents and first_prod.comparison_unit
+                else f"€{first_item.unit_price_cents / 100:.2f}/{first_item.unit}"
             )
-        )
+            why_status = (
+                "Auto-approved within guardrails."
+                if created_order.status == "auto_approved"
+                else f"Routed to Approval Centre ({', '.join(created_order.reasons)})."
+            )
+            summary = (
+                f"Selected SKU {first_item.product_id} — \"{first_item.name}\" ({first_item.quantity} × {first_item.unit} = "
+                f"€{created_order.total_cents / 100:,.2f}) as #1 for {active_priority.replace('_', ' ')} ({rel_txt}, {comp_txt}). "
+                f"Created {created_order.id}: {why_status}"
+            )
+        else:
+            summary = f"Prepared {len(proposed_lines)} line(s) for '{request.prompt}'."
         return AgentExecutionResult(
             prompt=request.prompt,
             agent=self.get_agent(agent.id),

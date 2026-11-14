@@ -1,5 +1,6 @@
 export type Allergen = "milk" | "gluten" | "soy" | "eggs" | "nuts" | "fish";
-export type Guardrails = { max_auto_approve_cents: number; review_allergens: Allergen[]; min_delivery_reliability?: number; require_approval_on_substitution?: boolean };
+export type PriorityMode = "balanced" | "low_carbon" | "lowest_price" | "authentic_finnish" | "highest_reliability";
+export type Guardrails = { max_auto_approve_cents: number; review_allergens: Allergen[]; min_delivery_reliability?: number; require_approval_on_substitution?: boolean; priority_mode?: PriorityMode };
 export type Product = {
   product_id: string;
   name: string;
@@ -10,6 +11,8 @@ export type Product = {
   dietary_claims?: string[];
   sustainability_labels?: string[];
   delivery_reliability?: number | null;
+  carbon_footprint_kg?: number | null;
+  co2_range_label?: string | null;
   comparison_price_cents?: number | null;
   comparison_unit?: string | null;
   substitute_tier?: string | null;
@@ -24,14 +27,33 @@ export type Order = {
   total_cents: number;
   status: "pending" | "auto_approved" | "approved" | "rejected";
   reasons: string[];
+  decision_trace?: string[];
   updated_at: string;
+  total_carbon_kg?: number | null;
+  min_reliability?: number | null;
   trust_verification?: {
     protocol: string;
     verified_at: string;
     supplier_mode: string;
     requested_delivery_date?: string | null;
     earliest_closing_time?: string | null;
+    quote_lock_id?: string | null;
+    signature_hmac_sha256?: string | null;
+    privacy_audit_model?: string | null;
+    privacy_audit_summary?: string | null;
   } | null;
+};
+export type AgentExecutionResult = {
+  prompt: string;
+  agent?: { id: string; name: string };
+  requested_date: string;
+  priority_mode?: PriorityMode;
+  orchestrator_model: string;
+  parsed_lines: { query: string; target_volume_liters_or_kg: number; unit_hint: string; exclude_allergens: Allergen[] }[];
+  plans?: { options: { product: Product }[] }[];
+  order: Order | null;
+  decision_trace: string[];
+  summary: string;
 };
 export type Availability = {
   name: string;

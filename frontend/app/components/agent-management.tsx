@@ -50,6 +50,6 @@ export default function AgentManagement({ agents, request, onChanged, busy, onBu
   return <section aria-label="Agent management">
     <p className="decision-feedback" role="status">{notice && <><Check size={14} /> {notice}</>}</p>
     <div className="agent-grid">{agents.map((agent) => <AgentCard key={`${agent.id}:${agent.last_active}`} agent={agent} request={request} busy={busy} onBusy={onBusy}
-      onSaved={() => { setNotice("Agent settings saved in browser preview."); onChanged(); }} />)}</div>
+      onSaved={() => { setNotice("Agent settings saved."); onChanged(); }} />)}</div>
   </section>;
 }

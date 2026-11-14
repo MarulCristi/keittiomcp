@@ -183,6 +183,28 @@ export function createBrowserPreview() {
             shortfall_packs: Math.max(0, packs - item.stock), tradeoff_explanation: `${packs} sales units cover the requested volume. ${item.stock} available in the sample catalog.` };
         }) };
       record(actor(), "Planned request", "completed", `${target} L/kg · ${params.get("query")} · ${date}`);
+    } else if (route === "agent_execute" && method === "POST") {
+      const req = body as { prompt: string; agent_id?: string; requested_date?: string | null };
+      const date = req.requested_date || new Date().toISOString().slice(0, 10);
+      const matches = search(req.prompt);
+      const top = matches[0] ?? catalog[0];
+      const order = createOrder({ agent_id: req.agent_id ?? "kitchen", items: [{ product_id: top.product_id, quantity: 10 }], requested_date: date });
+      response = {
+        prompt: req.prompt,
+        agent: actor(req.agent_id ?? "kitchen"),
+        requested_date: date,
+        orchestrator_model: "browser-preview",
+        parsed_lines: [{ query: req.prompt, target_volume_liters_or_kg: 10, unit_hint: "L/kg", exclude_allergens: guardrails.review_allergens }],
+        plans: [{ options: [{ product: top }] }],
+        order,
+        decision_trace: [
+          `1. Category & Dietary Filter: Matched SKU ${top.product_id} — "${top.name}"`,
+          `2. Priority Ranking: #1 [BEST] (${((top.delivery_reliability ?? 0.99) * 100).toFixed(0)}% on-time)`,
+          `3. Pack Math & Live Stock: 10 × ${top.unit} (${stock(top)} available)`,
+          `4. Guardrail & Quote Lock: ${order.id} · ${order.status.toUpperCase()}`,
+        ],
+        summary: `Selected SKU ${top.product_id} — "${top.name}" (10 × ${top.unit}). Created ${order.id} (${order.status}).`,
+      };
     } else {
       throw new Error("This action is unavailable in the browser preview.");
     }
