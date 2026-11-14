@@ -202,6 +202,10 @@ INGREDIENT_CATEGORY_ROUTES: list[tuple[set[str], set[str]]] = [
         {"pasta", "macaroni", "makaroni", "spaghetti", "fusilli", "noodle", "noodles", "rice", "riisi", "flour", "jauho", "flakes", "hiutale", "quinoa"},
         {"21300", "21310", "21320", "21340", "21360", "21370", "21371", "21372", "21373", "21380", "21381", "21382", "17304", "41755"},
     ),
+    (
+        {"toilet", "wc-paperi", "towel", "towels", "käsiarkki", "napkin", "napkins", "lautasliina", "tissue"},
+        {"63210", "63220", "63230"},
+    ),
 ]
 
 
@@ -1606,9 +1610,12 @@ class ValioClient:
 
         options: list[FulfillmentOption] = []
         tiers: list[SubstituteTier] = ["best", "better", "good"]
+        asked_by_pack_count = bool(re.search(r"\b(?:packs?|units?|boxes|cases|sacks?|rolls?)\b", query, re.IGNORECASE))
         for idx, prod in enumerate(ranked[:3]):
             tier = tiers[idx] if idx < len(tiers) else "good"
-            unit_vol = prod.net_volume_liters_or_kg or 1.0
+            is_non_food_item = prod.category.startswith(("63", "64", "20"))
+            unit_vol = 1.0 if (asked_by_pack_count or is_non_food_item) else (prod.net_volume_liters_or_kg or 1.0)
+            dim_label = "packs" if (asked_by_pack_count or is_non_food_item) else "L/kg"
             # Per Valio Aimo (Tommi): allowedLotSize=0.01 is a technical artifact; always round UP to whole integer units (>= 1).
             packs_needed = max(1, math.ceil(target_volume_liters_or_kg / unit_vol))
             total_vol = round(packs_needed * unit_vol, 2)
@@ -1624,7 +1631,7 @@ class ValioClient:
             }[tier]
 
             tradeoff = (
-                f"{packs_needed} × {prod.unit} = {total_vol:g} L/kg"
+                f"{packs_needed} × {prod.unit} = {total_vol:g} {dim_label}"
                 + (f" · Total €{total_cents / 100:,.2f}" if total_cents is not None else "")
                 + (f" (€{prod.comparison_price_cents / 100:.2f}/{prod.comparison_unit})" if prod.comparison_price_cents and prod.comparison_unit else "")
                 + (f" · {int(avail_packs)} packs in stock" if avail_packs is not None else " · Terminal direct-delivery stock")
