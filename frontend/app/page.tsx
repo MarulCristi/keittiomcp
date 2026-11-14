@@ -7,10 +7,10 @@ import {
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import { ThinkingOrb, type OrbState } from "@/components/ui/thinking-orbs";
 import OrderReview from "./components/order-review";
 import RequestPlanner from "./components/request-planner";
 import AgentManagement from "./components/agent-management";
+import DecisionFlowDiagram from "./components/decision-flow-diagram";
 import { AgentIcon, CartIcon, ApprovalIcon, ApprovedIcon } from "./components/dashboard-icons";
 import { createBrowserPreview, type ActivityEvent, type Agent } from "./lib/browser-preview";
 import { api, errorMessage, money, orderRequester, sampleProducts, statusLabels, type AgentExecutionResult, type Availability, type Guardrails, type Order, type PriorityMode, type Product } from "./lib/purchasing";
@@ -25,7 +25,19 @@ const allergens = [
 ] as const;
 
 type Workspace = { guardrails: Guardrails; orders: Order[]; supplier_mode: "demo" | "junction" };
-type Message = { role: "agent" | "user"; text: string; thinking?: string[]; products?: Product[]; sample?: boolean; substitutedFor?: string; requestedDate?: string; requestedQuantity?: number };
+type Message = {
+  role: "agent" | "user";
+  text: string;
+  headline?: string;
+  bullets?: { label: string; value: string; code?: string }[];
+  execution?: AgentExecutionResult;
+  thinking?: string[];
+  products?: Product[];
+  sample?: boolean;
+  substitutedFor?: string;
+  requestedDate?: string;
+  requestedQuantity?: number;
+};
 const prompts = [
   { label: "Auto-approve (<= €250)", text: "Agent: 20 L of lactose-free milk for Monday", liveText: "Agent: 20 L of lactose-free milk for Monday", Icon: Check },
   { label: "Challenge brief (1,000 L milk)", text: "Agent: 1000 L of lactose-free milk for Monday", liveText: "Agent: 1000 L of lactose-free milk for Monday", Icon: Sparkles },
@@ -80,6 +92,7 @@ export default function Dashboard() {
   const [sending, setSending] = useState(false);
   const [thinkingStage, setThinkingStage] = useState(0);
   const [selection, setSelection] = useState<{ product: Product; sample: boolean; quantity?: number; date?: string; substitutedFor?: string } | null>(null);
+  const [activeFlow, setActiveFlow] = useState<{ execution?: AgentExecutionResult | null; order?: Order | null } | null>(null);
   const [showSamples, setShowSamples] = useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
   const chatInput = useRef<HTMLInputElement>(null);
@@ -195,8 +208,39 @@ export default function Dashboard() {
       });
       if (result.order) updateOrder(result.order);
       else void refreshSideData();
+      setActiveFlow({ execution: result, order: result.order });
+      const firstItem = result.order?.items?.[0];
+      const topOpt = result.plans?.[0]?.options?.[0]?.product;
+      const bullets: { label: string; value: string; code?: string }[] = [];
+      if (firstItem) {
+        bullets.push({
+          label: firstItem.is_substitution ? "Auto-Substituted Item" : "Selected #1 SKU",
+          value: `${firstItem.name} (${firstItem.quantity.toLocaleString("en-GB")} × ${firstItem.unit})`,
+          code: `SKU ${firstItem.product_id}`,
+        });
+      }
+      if (topOpt) {
+        const rel = topOpt.delivery_reliability != null ? `${(topOpt.delivery_reliability * 100).toFixed(0)}% on-time` : "Verified";
+        const co2 = topOpt.carbon_footprint_kg != null ? `${topOpt.carbon_footprint_kg.toFixed(2)} kg CO2e/kg` : "Category median";
+        bullets.push({
+          label: `Ranking (${(result.priority_mode ?? inferredPriority).replace("_", " ")})`,
+          value: `${rel} · ${co2}`,
+        });
+      }
+      if (result.order) {
+        bullets.push({
+          label: "Order & Guardrails",
+          value: `${money(result.order.total_cents)} · ${statusLabels[result.order.status]}${result.order.reasons.length ? ` (${result.order.reasons.join(", ")})` : " (Within €250 limit)"}`,
+          code: result.order.id,
+        });
+      }
       return {
+        headline: result.order
+          ? `Order ${result.order.id} — ${statusLabels[result.order.status]}`
+          : "Procurement Plan Prepared",
         text: result.summary,
+        bullets,
+        execution: result,
         thinking: result.decision_trace,
       };
     }
@@ -339,9 +383,10 @@ export default function Dashboard() {
         <div className="activity-details">
           <p>{describeOrder(order)}</p>
           {order.reasons.length > 0 && <ul>{order.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
-          {order.decision_trace && order.decision_trace.length > 0 && <div className="decision-note">
-            <strong>4-step selection algorithm</strong>
-            <ul>{order.decision_trace.map((step, index) => <li key={index}>{step}</li>)}</ul>
+          {order.decision_trace && order.decision_trace.length > 0 && <div style={{ marginTop: 10 }}>
+            <button type="button" className="bubble-flow-btn" onClick={() => { setActiveFlow({ order }); setView("overview"); }}>
+              <ArrowDownUp size={13} /> Inspect selection flow diagram
+            </button>
           </div>}
           {(preview || Boolean(workspace)) && events.some((event) => event.order_id === order.id) && <div className="order-timeline">
             <h3>Order history</h3>
@@ -418,6 +463,7 @@ export default function Dashboard() {
     setSettingsSaved(false);
     setMessages([]);
     setSelection(null);
+    setActiveFlow(null);
     setShowSamples(false);
     setInput("");
     setPreview(nextPreview);
@@ -517,44 +563,51 @@ export default function Dashboard() {
                 <div key={index} className={`message ${message.role === "user" ? "user-message" : ""}`}>
                   {message.role === "agent" ? <div className="message-icon"><Sparkles size={16} /></div> : null}
                   <div className="message-body">
-                    <span className="message-author">{message.role === "user" ? "You" : "Demo response"}</span>
-                    {message.thinking && message.thinking.length > 0 && (
-                      <details open className="decision-note" style={{ marginBottom: "0.5rem" }}>
-                        <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-                          Why this item was selected ({message.thinking.length}-step algorithm)
-                        </summary>
-                        <ul style={{ marginTop: "0.35rem", paddingLeft: "1.1rem", fontSize: "0.84rem", lineHeight: 1.45 }}>
-                          {message.thinking.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}
+                    <span className="message-author">{message.role === "user" ? "You" : "Purchasing assistant"}</span>
+                    <div className="bubble markdown-bubble">
+                      {message.headline && <strong style={{ display: "block", marginBottom: 4 }}>{message.headline}</strong>}
+                      {message.bullets && message.bullets.length > 0 ? (
+                        <ul>
+                          {message.bullets.map((b, bIdx) => (
+                            <li key={bIdx}>
+                              <strong>{b.label}:</strong> {b.code && <><code>{b.code}</code> </>}{b.value}
+                            </li>
+                          ))}
                         </ul>
-                      </details>
-                    )}
-                    <div className="bubble">{message.text}</div>
+                      ) : (
+                        <p style={{ margin: 0, color: "var(--ink)" }}>{message.text}</p>
+                      )}
+                      {(message.execution || (message.thinking && message.thinking.length > 0)) && (
+                        <div>
+                          <button
+                            type="button"
+                            className="bubble-flow-btn"
+                            onClick={() => setActiveFlow({ execution: message.execution ?? null, order: message.execution?.order ?? null })}
+                          >
+                            <ArrowDownUp size={13} /> Inspect selection flow diagram →
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     {message.products && productCards(message.products, Boolean(message.sample), message.substitutedFor, message.requestedDate, message.requestedQuantity)}
                   </div>
                 </div>
               ))}
               {sending ? (
-                <div
-                  className="inline-flex h-[56px] items-center gap-3 rounded-full pl-[10px] pr-6 my-2"
-                  style={{
-                    background: "rgba(18, 40, 64, 0.92)",
-                    boxShadow: "inset 0 0 0 1px rgba(44, 180, 160, 0.35), 0 6px 20px rgba(15, 35, 58, 0.14)",
-                  }}
-                  role="status"
-                >
-                  <span className="[&_canvas]:!size-11 flex items-center justify-center">
-                    <ThinkingOrb
-                      state={(thinkingStage === 1 ? "searching" : thinkingStage === 2 ? "solving" : thinkingStage === 3 ? "shaping" : "working") as OrbState}
-                      size={64}
-                      theme="dark"
-                    />
-                  </span>
-                  <span className="whitespace-nowrap text-sm font-medium leading-5" style={{ color: "rgba(245, 250, 255, 0.92)" }}>
-                    {thinkingStage <= 1 && "1/4 · Filtering GS1 category & allergens…"}
-                    {thinkingStage === 2 && "2/4 · Ranking SKUs by reliability, CO2 & price…"}
-                    {thinkingStage === 3 && "3/4 · Calculating pack math & live Valio stock…"}
-                    {thinkingStage >= 4 && "4/4 · Verifying €250 guardrail & HMAC quote lock…"}
-                  </span>
+                <div className="step-progress-card" role="status">
+                  <div className="step-progress-bar">
+                    <span className={thinkingStage >= 1 ? "active" : ""} />
+                    <span className={thinkingStage >= 2 ? "active" : ""} />
+                    <span className={thinkingStage >= 3 ? "active" : ""} />
+                    <span className={thinkingStage >= 4 ? "active" : ""} />
+                  </div>
+                  <strong>
+                    {thinkingStage <= 1 && "Step 1/4 · Filtering GS1 category & dietary rules…"}
+                    {thinkingStage === 2 && "Step 2/4 · Ranking SKUs by reliability, CO2 & price…"}
+                    {thinkingStage === 3 && "Step 3/4 · Calculating pack math & live Valio stock…"}
+                    {thinkingStage >= 4 && "Step 4/4 · Verifying €250 guardrail & HMAC quote lock…"}
+                  </strong>
+                  <small>Updating the selection flow diagram on the right…</small>
                 </div>
               ) : null}
               <div ref={chatEnd} />
@@ -584,6 +637,15 @@ export default function Dashboard() {
           </section>}
 
           <aside className="right-panel" aria-label="Purchasing controls">
+            {view === "overview" && activeFlow && (
+              <DecisionFlowDiagram
+                execution={activeFlow.execution}
+                order={activeFlow.order}
+                guardrails={workspace?.guardrails ?? null}
+                onClose={() => setActiveFlow(null)}
+                onOpenApprovals={() => setView("approvals")}
+              />
+            )}
             <div ref={reviewAnchor} tabIndex={-1} className="review-anchor" hidden={!selection && view === "overview"}>
               {selection ? <OrderReview key={`${selection.sample}:${selection.product.product_id}:${selection.quantity}:${selection.date}:${selection.substitutedFor}`} product={selection.product} sample={selection.sample}
                 request={request} preview={preview}

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { ThinkingOrb, type OrbState } from "@/components/ui/thinking-orbs";
 import { api, errorMessage, money, type ApiClient, type Allergen, type PriorityMode, type Product } from "../lib/purchasing";
 
 type Option = {
@@ -87,19 +86,11 @@ export default function RequestPlanner({ request = api, connected, busy, onBusy,
         <button className="primary-button" type="submit" disabled={!connected || busy}>{busy ? "Thinking & planning…" : "Find fulfillment options"}</button>
       </fieldset>
     </form>
-    {thinkingStep > 0 && <div className="decision-note" role="status" style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 14, background: "#002f6d", color: "#fff", borderRadius: 999, padding: "10px 22px 10px 12px", width: "fit-content" }}>
-      <span className="[&_canvas]:!size-12" style={{ display: "inline-flex" }}>
-        <ThinkingOrb state={(thinkingStep === 1 ? "searching" : thinkingStep === 2 ? "solving" : "shaping") as OrbState} size={64} theme="dark" />
-      </span>
-      <div>
-        <strong style={{ display: "block", fontSize: 13, color: "#fff" }}>
-          {thinkingStep === 1 ? "1. Category & Dietary Filter…" : thinkingStep === 2 ? "2. Live Valio Aimo Price & Stock Lookup…" : `3. Good-Better-Best Pack Math (${priority.replace("_", " ")})…`}
-        </strong>
-        <span style={{ fontSize: 12, color: "rgba(227,240,239,0.82)" }}>
-          {thinkingStep === 1 ? `Routing '${query}' to GS1 category` : thinkingStep === 2 ? "Checking warehouse stock & EUR comparison prices" : `Calculating ceil(${target} L/kg ÷ pack volume)`}
-        </span>
-      </div>
-    </div>}
+    {thinkingStep > 0 && <p className="decision-note" role="status">
+      <strong>
+        {thinkingStep === 1 ? "Step 1/3 · Category & Dietary Filter…" : thinkingStep === 2 ? "Step 2/3 · Live Valio Aimo Price & Stock Lookup…" : `Step 3/3 · Good-Better-Best Pack Math (${priority.replace("_", " ")})…`}
+      </strong>
+    </p>}
     {error && <p className="error" role="alert">{error}</p>}
     {plan && <div aria-live="polite">
       <h3 className="review-product-name">{plan.query}</h3>

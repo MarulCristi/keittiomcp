@@ -4,7 +4,12 @@ export type Guardrails = { max_auto_approve_cents: number; review_allergens: All
 export type Product = {
   product_id: string;
   name: string;
+  name_fi?: string | null;
+  category?: string | null;
+  vendor?: string | null;
+  country_of_origin?: string | null;
   unit: string;
+  net_volume_liters_or_kg?: number | null;
   unit_price_cents: number | null;
   stock: number | null;
   allergens: Allergen[] | null;
@@ -23,7 +28,7 @@ export type Order = {
   agent_id?: string | null;
   agent_name?: string | null;
   buyer_name?: string | null;
-  items: { product_id: string; name: string; quantity: number; unit: string }[];
+  items: { product_id: string; name: string; quantity: number; unit: string; unit_price_cents?: number; is_substitution?: boolean; substituted_for?: string | null }[];
   total_cents: number;
   status: "pending" | "auto_approved" | "approved" | "rejected";
   reasons: string[];
@@ -41,16 +46,29 @@ export type Order = {
     signature_hmac_sha256?: string | null;
     privacy_audit_model?: string | null;
     privacy_audit_summary?: string | null;
+    redacted_confidential_fields?: string[];
   } | null;
+};
+export type FulfillmentPlanOption = {
+  tier?: string;
+  headline?: string;
+  product: Product;
+  recommended_packs?: number;
+  total_volume_liters_or_kg?: number;
+  total_price_cents?: number | null;
+  available_packs?: number | null;
+  can_fulfill_full_volume?: boolean;
+  shortfall_packs?: number;
+  tradeoff_explanation?: string;
 };
 export type AgentExecutionResult = {
   prompt: string;
-  agent?: { id: string; name: string };
+  agent?: { id: string; name: string; spending_limit_cents?: number };
   requested_date: string;
   priority_mode?: PriorityMode;
   orchestrator_model: string;
   parsed_lines: { query: string; target_volume_liters_or_kg: number; unit_hint: string; exclude_allergens: Allergen[] }[];
-  plans?: { options: { product: Product }[] }[];
+  plans?: { query?: string; target_volume_liters_or_kg?: number; summary?: string; options: FulfillmentPlanOption[] }[];
   order: Order | null;
   decision_trace: string[];
   summary: string;
