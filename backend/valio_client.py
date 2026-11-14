@@ -188,10 +188,14 @@ INGREDIENT_CATEGORY_ROUTES: list[tuple[set[str], set[str]]] = [
             "potato", "potatoes", "peruna", "tomato", "tomatoes", "tomaatti", "cucumber", "kurkku",
             "lettuce", "cabbage", "kaali", "onion", "sipuli", "carrot", "porkkana", "mushroom",
             "mushrooms", "sieni", "chanterelle", "garlic", "fries", "ranskalaiset",
+            "pepper", "peppers", "paprika", "capsicum", "chili", "zucchini", "kesäkurpitsa",
+            "eggplant", "aubergine", "munakoiso", "broccoli", "parsakaali", "cauliflower", "kukkakaali",
+            "spinach", "pinaatti", "celery", "selleri", "leek", "purjo", "beetroot", "punajuuri",
         },
         {
             "17401", "17402", "17403", "17404", "17405", "17406", "17407", "17408",
-            "41731", "41732", "41734", "41750", "41751", "21550", "21590", "21591", "21593", "21595", "21596",
+            "17411", "17412", "17413", "17414", "17420", "17430", "17440", "17450", "17460", "17470", "17471",
+            "41731", "41732", "41733", "41734", "41750", "41751", "21550", "21590", "21591", "21593", "21595", "21596",
         },
     ),
     (
@@ -199,6 +203,128 @@ INGREDIENT_CATEGORY_ROUTES: list[tuple[set[str], set[str]]] = [
         {"21300", "21310", "21320", "21340", "21360", "21370", "21371", "21372", "21373", "21380", "21381", "21382", "17304", "41755"},
     ),
 ]
+
+
+# Multi-word & regional culinary synonyms -> Valio Aimo catalog vocabulary (English/Finnish)
+CULINARY_PHRASE_SYNONYMS: list[tuple[str, str]] = [
+    (r"\bbell\s+peppers?\b", "paprika"),
+    (r"\bsweet\s+peppers?\b", "paprika"),
+    (r"\bcapsicums?\b", "paprika"),
+    (r"\bzucchinis?\b", "kesäkurpitsa"),
+    (r"\bcourgettes?\b", "kesäkurpitsa"),
+    (r"\beggplants?\b", "munakoiso"),
+    (r"\baubergines?\b", "munakoiso"),
+    (r"\bcilantro\b", "korianteri"),
+    (r"\barugula\b", "rucola"),
+    (r"\bscallions?\b", "kevätsipuli"),
+    (r"\bspring\s+onions?\b", "kevätsipuli"),
+    (r"\bheavy\s+cream\b", "whipping cream"),
+    (r"\bground\s+beef\b", "beef minced"),
+]
+
+PLURAL_STEM_MAP: dict[str, str] = {
+    "tomatoes": "tomato",
+    "potatoes": "potato",
+    "peppers": "pepper",
+    "onions": "onion",
+    "carrots": "carrot",
+    "cucumbers": "cucumber",
+    "mushrooms": "mushroom",
+    "eggs": "egg",
+    "apples": "apple",
+    "lemons": "lemon",
+    "limes": "lime",
+    "oranges": "orange",
+    "bananas": "banana",
+    "berries": "berry",
+    "strawberries": "strawberry",
+    "blueberries": "blueberry",
+    "raspberries": "raspberry",
+    "loaves": "loaf",
+    "fillets": "fillet",
+    "breasts": "breast",
+    "sausages": "sausage",
+    "burgers": "burger",
+    "patties": "patty",
+    "pies": "pie",
+    "soups": "soup",
+    "salads": "salad",
+    "noodles": "noodle",
+    "shrimps": "shrimp",
+    "prawns": "prawn",
+    "mussels": "mussel",
+    "clams": "clam",
+    "olives": "olive",
+    "beans": "bean",
+}
+
+
+def _normalize_query_terms(cleaned_query: str) -> list[str]:
+    """Normalize culinary phrases (e.g. 'bell pepper' -> 'paprika') and stem English plurals ('tomatoes' -> 'tomato')."""
+    text = cleaned_query
+    for pattern, replacement in CULINARY_PHRASE_SYNONYMS:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    raw_tokens = [t for t in re.split(r"\s+", text.strip()) if t]
+    normalized: list[str] = []
+    for tok in raw_tokens:
+        stemmed = PLURAL_STEM_MAP.get(tok, tok)
+        if stemmed not in normalized:
+            normalized.append(stemmed)
+    return normalized
+
+
+def _compute_variety_penalty(item: "Product", query_terms: list[str], raw_query_lower: str) -> int:
+    """Rank normal/standard whole ingredients (0) ahead of pre-cut (1) or specialty sub-varieties/canned forms (2-3)
+    unless the user explicitly asked for that sub-variety (e.g. 'cherry tomato', 'diced tomato', 'chili pepper').
+    """
+    text = f"{item.name} {item.name_fi or ''}".casefold()
+    precut_words = (
+        "sliced", "slices", "viipale", "diced", "kuutio", "strip", "strips", "suikale",
+        "shredded", "raaste", "wedge", "wedges", "lohko", "cleaved", "peeled", "kuorittu",
+    )
+    asked_precut = any(w in raw_query_lower for w in precut_words)
+    is_precut = item.category == "17443" or any(w in text for w in precut_words)
+
+    # If searching for bell pepper / paprika (and not chili/jalapeno/habanero), penalize hot chilies & canned peppers
+    if "paprika" in query_terms or "pepper" in query_terms:
+        asked_chili = any(w in raw_query_lower for w in ("chili", "chilli", "jalapeno", "jalopeno", "habanero", "rawit", "cayenne"))
+        if not asked_chili and any(w in text for w in ("chili", "chilli", "jalapeno", "jalopeno", "habanero", "rawit")):
+            return 3
+        if item.category == "17406" and not is_precut:
+            if any(w in text for w in ("1.cl", "1.lk", "1cl", "1lk", "luomu", "organic", "suomi", "finland")):
+                return 0
+            return 1
+        if is_precut and not asked_precut:
+            return 2
+        return 3
+
+    # If searching for tomato (and not cherry/plum/pearl/paste/peeled/crushed/sun-dried), prioritize standard fresh whole tomatoes
+    if "tomato" in query_terms or "tomaatti" in query_terms:
+        sub_varieties = (
+            "cherry", "kirsikka", "tomberry", "tom berry", "pearl", "helmi", "plum", "luumu",
+            "san marzano", "miniluumu", "cocktail", "paste", "pyree", "puree", "pulp", "crushed",
+            "murska", "peeled", "kuorittu", "dried", "kuivattu", "puolikuiv", "ketchup", "sauce",
+        )
+        asked_sub = any(w in raw_query_lower for w in sub_varieties)
+        if not asked_sub:
+            if any(w in text for w in sub_varieties):
+                return 3
+            if is_precut and not asked_precut:
+                return 2
+            if item.category == "17401":
+                if any(w in text for w in ("1cl", "1.cl", "1lk", "1.lk")):
+                    return 0
+                return 1
+            return 3
+
+    if is_precut and not asked_precut and item.category.startswith("174"):
+        return 2
+
+    # General fresh produce preference: when in 174xx (fresh produce) vs 215xx (canned/brine), prefer fresh unless 'canned'/'pickled' asked
+    if item.category.startswith("215") and not any(w in raw_query_lower for w in ("canned", "pickled", "brine", "paste", "crushed", "sliced")):
+        return 3
+
+    return 0
 
 
 def _resolve_target_categories(terms: list[str], raw_query: str) -> set[str] | None:
@@ -1018,17 +1144,21 @@ def _rank_substitutes_good_better_best(
         if tok not in stop_words
     }
 
+    orig_text = f"{original.name} {original.name_fi or ''}".casefold()
+    orig_terms = _normalize_query_terms(orig_text)
+
     def score_best(p: Product) -> tuple:
         in_stock = 1 if (p.stock is None or p.stock > 0) else 0
         cand_text = f"{p.name} {p.name_fi or ''}".casefold()
         name_sim = sum(1 for tok in orig_tokens if tok in cand_text) if orig_tokens else 1
         purity_inv = -p.purity_tier
+        var_pen_inv = -_compute_variety_penalty(p, orig_terms, orig_text)
         same_claims = len(set(original.dietary_claims or []) & set(p.dietary_claims or []))
         rel = p.delivery_reliability if p.delivery_reliability is not None else 0.85
         co2_inv = -(p.carbon_footprint_kg if p.carbon_footprint_kg is not None else 50.0)
         labels_cnt = len(p.sustainability_labels or [])
         price_inv = -(p.comparison_price_cents or p.unit_price_cents or 999999)
-        return (in_stock, name_sim > 0, purity_inv, name_sim, same_claims, round(rel, 3), round(co2_inv, 2), labels_cnt, price_inv)
+        return (in_stock, name_sim > 0, var_pen_inv, purity_inv, name_sim, same_claims, round(rel, 3), round(co2_inv, 2), labels_cnt, price_inv)
 
     ranked = sorted(candidates, key=score_best, reverse=True)
     result: list[Product] = []
@@ -1167,6 +1297,31 @@ class ValioClient:
                         ordered[item.product_id] += item.quantity
         return {key: int(product.stock or 0) - ordered[key] for key, product in CATALOG.items()}
 
+    @staticmethod
+    def _translate_query_with_gemini(raw_query: str) -> list[str]:
+        """Use Gemini 3.8 Flash to translate unfamiliar culinary terms into Finnish/EU wholesale catalog nouns."""
+        gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not gemini_key:
+            return []
+        prompt = (
+            "Translate this restaurant ingredient search query into 1 or 2 simple singular Finnish or European English "
+            "wholesale food catalog keywords (e.g. 'bell pepper' -> 'paprika', 'scallions' -> 'kevätsipuli', 'arugula' -> 'rucola'). "
+            "Return ONLY the lowercase keyword(s) separated by space, no punctuation.\n"
+            f"Query: {raw_query}"
+        )
+        try:
+            resp = httpx.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={gemini_key}",
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=4.0,
+            )
+            if resp.is_success:
+                text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
+                return [w for w in re.findall(r"[a-zäöå]+", text) if len(w) >= 3][:2]
+        except Exception:
+            pass
+        return []
+
     def search_products(self, query: str) -> list[Product]:
         cleaned = query.casefold().strip()
         required_claims: list[str] = []
@@ -1186,9 +1341,9 @@ class ValioClient:
             " ",
             cleaned,
         )
-        terms = [t for t in cleaned.split() if t]
+        terms = _normalize_query_terms(cleaned)
         if not terms and not required_claims:
-            terms = query.casefold().split()
+            terms = _normalize_query_terms(query.casefold())
 
         if self.supplier:
             catalog = self.supplier.catalog()
@@ -1202,7 +1357,10 @@ class ValioClient:
             def collect_matches(enforce_categories: bool, enforce_allergens: bool) -> list[Product]:
                 found: list[Product] = []
                 for product in catalog:
-                    if enforce_categories and target_categories and product.category not in target_categories:
+                    if enforce_categories and target_categories and not (
+                        product.category in target_categories
+                        or (any( tc.startswith("174") for tc in target_categories ) and product.category.startswith("174"))
+                    ):
                         continue
                     if required_claims and not all(c in (product.dietary_claims or []) for c in required_claims):
                         continue
@@ -1221,6 +1379,15 @@ class ValioClient:
             if not matches and target_categories:
                 # Fallback if all items in the category contain a restricted allergen (e.g. wheat bread when gluten is restricted)
                 matches = collect_matches(enforce_categories=True, enforce_allergens=False)
+
+            # Gemini 3.8 Flash + Gemma 4 Privacy Filter fallback if 0 matches found for an unfamiliar culinary term
+            if not matches and self.supplier.transport is None:
+                ai_terms = self._translate_query_with_gemini(query)
+                if ai_terms:
+                    terms = _normalize_query_terms(" ".join(ai_terms))
+                    target_categories = _resolve_target_categories(terms, " ".join(ai_terms))
+                    matches = collect_matches(enforce_categories=True, enforce_allergens=True)
+
             if not matches:
                 # Fallback to full catalog if custom/SKU query didn't match target_categories
                 matches = collect_matches(enforce_categories=False, enforce_allergens=True)
@@ -1228,7 +1395,7 @@ class ValioClient:
                 matches = collect_matches(enforce_categories=False, enforce_allergens=False)
 
             asked_for_processed = any(
-                w in terms for w in ("burger", "burgers", "patty", "pihvi", "pie", "piirakka", "soup", "keitto", "ball", "meatball")
+                w in terms for w in ("burger", "patty", "pihvi", "pie", "piirakka", "soup", "keitto", "ball", "meatball")
             )
 
             def rank_key(item: Product) -> tuple:
@@ -1236,8 +1403,9 @@ class ValioClient:
                 has_restricted_allergen = (
                     0 if restricted_allergens.isdisjoint(item.allergens or []) else 1
                 )
-                # Step 3: Ingredient purity (pure fillets/cuts/single-ingredient first unless user asked for burger/pie/soup)
-                purity = 0 if asked_for_processed else item.purity_tier
+                # Step 3: Standard whole variety first (e.g. normal Class 1 tomato/capsicum over diced/cherry/paste), then purity
+                variety_pen = _compute_variety_penalty(item, terms, query.casefold())
+                purity = 0 if (asked_for_processed or item.category.startswith("174")) else item.purity_tier
                 # Prefer whole-word match of the search terms in the product name (e.g. 'salmon' over 'salmonburger')
                 name_words = set(re.findall(r"[a-zäöå0-9]+", f"{item.name} {item.name_fi or ''}".casefold()))
                 whole_word_match = 0 if all(t in name_words for t in terms) else 1
@@ -1245,7 +1413,7 @@ class ValioClient:
                 rel = -(item.delivery_reliability if item.delivery_reliability is not None else 0.0)
                 co2 = item.carbon_footprint_kg if item.carbon_footprint_kg is not None else 999.0
                 vol_boost = -(item.net_volume_liters_or_kg or 0.0) if "1000" in query else 0.0
-                return (exact_id, has_restricted_allergen, purity, whole_word_match, vol_boost, has_rel, rel, co2)
+                return (exact_id, has_restricted_allergen, variety_pen, purity, whole_word_match, vol_boost, has_rel, rel, co2)
 
             matches.sort(key=rank_key)
             return matches[:25]
