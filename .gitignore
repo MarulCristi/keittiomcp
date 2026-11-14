@@ -9,3 +9,4 @@
 **/*.tsbuildinfo
 **/next-env.d.ts
 backend/data/products.json
+**/beautify_products.json
