@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from datetime import date
+import threading
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, Query, Request
@@ -19,14 +20,30 @@ from valio_client import (
 mcp_app = mcp.http_app(path="/mcp", stateless_http=True, json_response=True)
 
 
+def _warm_catalog():
+    if client.supplier is not None and client.supplier._catalog is None:
+        try:
+            client.supplier.catalog()
+        except Exception:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     client.initialize()
+    if client.supplier is not None and client.supplier._catalog is None:
+        threading.Thread(target=_warm_catalog, daemon=True).start()
     async with mcp_app.lifespan(app):
         yield
 
 
 app = FastAPI(title="Keittiö Purchasing API", version="0.2.0", lifespan=lifespan)
+
+
+@app.get("/health")
+def health():
+    loaded = bool(client.supplier and client.supplier._catalog is not None)
+    return {"status": "ok", "catalog_loaded": loaded}
 
 
 @app.exception_handler(ProcurementError)

@@ -1108,8 +1108,8 @@ class ValioAPI:
         # In-memory cache for static weekend mock API: (requested_date_iso, product_id) -> (SupplierAvailability, SupplierPrice | None, currency, server_time)
         self._live_cache: dict[tuple[str, str], tuple[SupplierAvailability, SupplierPrice | None, str, str | None]] = {}
 
-    def _http(self) -> httpx.Client:
-        return httpx.Client(timeout=8, transport=self.transport, follow_redirects=False)
+    def _http(self, timeout: float = 8.0) -> httpx.Client:
+        return httpx.Client(timeout=timeout, transport=self.transport, follow_redirects=False)
 
     def _request(self, http: httpx.Client, method: str, url: httpx.URL, **kwargs) -> httpx.Response:
         headers = {"Accept": "application/json"}
@@ -1202,7 +1202,7 @@ class ValioAPI:
                 raise ProcurementError("Local products.json is invalid JSON.", 502) from None
         else:
             url = VALIO_BASE_URL.join("/api/products/download")
-            with self._http() as http:
+            with self._http(timeout=60.0) as http:
                 for _ in range(6):
                     response = self._request(http, "GET", url)
                     if not response.has_redirect_location:
