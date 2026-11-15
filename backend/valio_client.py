@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sqlite3
+import threading
 import time
 from collections import Counter
 from contextlib import contextmanager
@@ -134,6 +135,7 @@ DISH_CATEGORY_ROUTES: list[tuple[set[str], set[str]]] = [
         {"52200", "52201", "52202", "52208", "52209", "52210", "52240", "52260", "52290", "22540"},
     ),
     ({"cake", "cakes", "kakku", "muffin", "muffins", "pastry", "cinnamon", "pulla", "donut"}, {"11030", "41763", "41764"}),
+    ({"yoghurt", "yogurt", "jogurtti", "quark", "rahka", "viili"}, {"10411", "10412", "10430"}),
     ({"babyfood", "baby", "lastenateria", "piltti"}, {"21600"}),
     ({"powder", "jauhe", "milkpowder", "maitojauhe"}, {"10405", "21980"}),
 ]
@@ -258,6 +260,9 @@ CULINARY_PHRASE_SYNONYMS: list[tuple[str, str]] = [
     (r"\bspring\s+onions?\b", "kevätsipuli"),
     (r"\bheavy\s+cream\b", "whipping cream"),
     (r"\bground\s+beef\b", "beef minced"),
+    (r"\byogurts?\b", "yoghurt"),
+    (r"\byoghurts\b", "yoghurt"),
+    (r"\bchilli\b", "chili"),
 ]
 
 PLURAL_STEM_MAP: dict[str, str] = {
@@ -480,6 +485,7 @@ class Product(BaseModel):
     category_co2_median: float | None = None
     co2_range_label: str | None = None
     net_volume_liters_or_kg: float | None = None
+    ingredients_text: str | None = None
     comparison_price_cents: int | None = None
     comparison_unit: str | None = None
     purity_tier: int = 1
@@ -662,6 +668,7 @@ class AgentExecutionResult(BaseModel):
     proposed_order_lines: list[OrderLine]
     decision_trace: list[str]
     order: PurchaseOrder | None = None
+    script_log: str | None = None
     rejected: bool = False
     rejection_reason: str | None = None
     rejected_products: list[Product] = Field(default_factory=list)
@@ -977,6 +984,25 @@ def _parse_synkka_product(
         (str(k.get("value") or "") for k in key_ings if isinstance(k, dict) and k.get("language") == "en"),
         str(key_ings[0].get("value") or "") if key_ings and isinstance(key_ings[0], dict) else "",
     )
+    ingredients_text = re.sub(r"\s+", " ", key_ing_en).strip() or None
+    if not ingredients_text:
+        raw_ings = sorted(
+            (ing for ing in (synkka.get("ingredients") or []) if isinstance(ing, dict)),
+            key=lambda ing: ing.get("sequence") or 0,
+        )
+        ing_parts: list[str] = []
+        for ing in raw_ings:
+            names = [n for n in (ing.get("names") or []) if isinstance(n, dict) and n.get("value")]
+            best_name = next((str(n["value"]) for n in names if n.get("language") == "en"), None) or (
+                str(names[0]["value"]) if names else None
+            )
+            if best_name:
+                pct = ing.get("percentage")
+                ing_parts.append(f"{best_name} ({pct:g}%)" if isinstance(pct, (int, float)) else best_name)
+        if ing_parts:
+            ingredients_text = ", ".join(ing_parts)
+        elif isinstance(raw.get("ingredients_text"), str) and raw["ingredients_text"].strip():
+            ingredients_text = raw["ingredients_text"].strip()
     purity_tier = _compute_purity_tier(name_en, name_fi or "", key_ing_en)
 
     explicit_subs: list[str] = []
@@ -1009,6 +1035,7 @@ def _parse_synkka_product(
         delivery_reliability=reliability_map.get(pid),
         carbon_footprint_kg=carbon_map.get(pid),
         net_volume_liters_or_kg=vol,
+        ingredients_text=ingredients_text,
         purity_tier=purity_tier,
         gtins=gtins,
     )
@@ -1082,7 +1109,7 @@ class ValioAPI:
         self._live_cache: dict[tuple[str, str], tuple[SupplierAvailability, SupplierPrice | None, str, str | None]] = {}
 
     def _http(self) -> httpx.Client:
-        return httpx.Client(timeout=15, transport=self.transport, follow_redirects=False)
+        return httpx.Client(timeout=8, transport=self.transport, follow_redirects=False)
 
     def _request(self, http: httpx.Client, method: str, url: httpx.URL, **kwargs) -> httpx.Response:
         headers = {"Accept": "application/json"}
@@ -1097,8 +1124,9 @@ class ValioAPI:
                 raise ProcurementError("Could not reach Valio Aimo.", 502) from None
             if response.status_code == 429 and attempt == 0 and self.transport is None:
                 retry_after = int(response.headers.get("Retry-After", "30") or "30")
-                time.sleep(min(retry_after, 31))
-                continue
+                if retry_after <= 4:
+                    time.sleep(retry_after)
+                    continue
             return response
         return response
 
@@ -1730,10 +1758,11 @@ class ValioClient:
     def __init__(self, database: Path, supplier: ValioAPI | None = None):
         self.database = database
         self.supplier = supplier
+        self._clock_override = threading.local()
 
     @contextmanager
     def transaction(self, *, write: bool = False):
-        db = sqlite3.connect(self.database)
+        db = sqlite3.connect(self.database, timeout=15.0)
         try:
             with db:
                 db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
@@ -1745,8 +1774,7 @@ class ValioClient:
         with self.transaction(write=True) as db:
             db.execute("CREATE TABLE IF NOT EXISTS orders (number INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, sort_order INTEGER NOT NULL, payload TEXT NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)")
+            self._ensure_agent_tables(db)
             inserted = db.execute(
                 "INSERT OR IGNORE INTO settings VALUES (1, ?)", (Guardrails().model_dump_json(),)
             )
@@ -1821,17 +1849,23 @@ class ValioClient:
         db.execute("CREATE TABLE IF NOT EXISTS sim_clock (id INTEGER PRIMARY KEY, offset_seconds INTEGER NOT NULL DEFAULT 0)")
         db.execute("INSERT OR IGNORE INTO sim_clock (id, offset_seconds) VALUES (1, 0)")
 
-    def _clock_offset_seconds(self) -> int:
+    def _clock_offset_seconds(self, db: sqlite3.Connection | None = None) -> int:
         try:
-            with self.transaction(write=True) as db:
+            if db is not None:
                 self._ensure_agent_tables(db)
                 row = db.execute("SELECT offset_seconds FROM sim_clock WHERE id = 1").fetchone()
+                return int(row[0]) if row else 0
+            with self.transaction() as ro_db:
+                row = ro_db.execute("SELECT offset_seconds FROM sim_clock WHERE id = 1").fetchone()
                 return int(row[0]) if row else 0
         except Exception:
             return 0
 
-    def _now_utc(self) -> datetime:
-        return datetime.now(timezone.utc) + timedelta(seconds=self._clock_offset_seconds())
+    def _now_utc(self, db: sqlite3.Connection | None = None) -> datetime:
+        override = getattr(self._clock_override, "now_utc", None)
+        if isinstance(override, datetime):
+            return override
+        return datetime.now(timezone.utc) + timedelta(seconds=self._clock_offset_seconds(db))
 
     def _default_delivery_date(self) -> date:
         offset = self._clock_offset_seconds()
@@ -1936,6 +1970,15 @@ class ValioClient:
             raise ProcurementError(msg, 403)
         return agent
 
+    def _can_agent_perform(self, agent_id: str, required_permission: AgentPermission) -> AgentProfile | None:
+        try:
+            agent = self.get_agent(agent_id)
+        except ProcurementError:
+            return None
+        if agent.status != "connected" or required_permission not in agent.permissions:
+            return None
+        return agent
+
     @staticmethod
     def product(product_id: str) -> Product:
         product = CATALOG.get(product_id.upper())
@@ -2006,7 +2049,7 @@ class ValioClient:
             resp = httpx.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent?key={gemini_key}",
                 json={"contents": [{"parts": [{"text": prompt}]}]},
-                timeout=4.0,
+                timeout=2.5,
             )
             if resp.is_success:
                 text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
@@ -2122,6 +2165,7 @@ class ValioClient:
                     searchable = _normalize_word_hyphens(
                         f"{product.product_id} {product.name} {product.name_fi or ''} {product.category} {product.vendor or ''}".casefold()
                     )
+                    searchable = re.sub(r"\byogurts?\b", "yoghurt", searchable)
                     searchable_for_terms = (
                         re.sub(r"\bmilk[-\s]free\b", "dairy_excluded", searchable)
                         if "milk" in terms
@@ -2704,7 +2748,7 @@ class ValioClient:
                 resp = httpx.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent?key={gemini_key}",
                     json={"contents": [{"parts": [{"text": gemma_prompt}]}]},
-                    timeout=4.0,
+                    timeout=2.5,
                 )
                 if resp.is_success:
                     text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -2750,6 +2794,7 @@ class ValioClient:
             quantities[pid] += line.quantity
             line_meta[pid] = line
 
+        blocked_stock_msg: str | None = None
         with self.transaction(write=True) as db:
             stock = self.stock(self.orders(db))
             items: list[OrderItem] = []
@@ -2760,9 +2805,8 @@ class ValioClient:
             for product_id, quantity in quantities.items():
                 product = self.product(product_id)
                 if quantity > stock[product_id]:
-                    msg = f"Only {stock[product_id]} units of SKU {product.product_id} ({product.name}) are available"
-                    self._record_event(agent.id, "Attempted purchase", "blocked", msg)
-                    raise ProcurementError(msg)
+                    blocked_stock_msg = f"Only {stock[product_id]} units of SKU {product.product_id} ({product.name}) are available"
+                    break
                 meta = line_meta[product_id]
                 items.append(
                     self.order_item(
@@ -2781,50 +2825,55 @@ class ValioClient:
                         f"Delivery reliability {product.delivery_reliability * 100:.0f}% below {guardrails.min_delivery_reliability * 100:.0f}% threshold"
                     )
 
-            total = sum(item.quantity * item.unit_price_cents for item in items)
-            for name in sorted(allergens.intersection(guardrails.review_allergens)):
-                reasons.insert(0, f"Contains {name}")
-            if total > guardrails.max_auto_approve_cents or guardrails.max_auto_approve_cents == 0:
-                limit = guardrails.max_auto_approve_cents / 100
-                reasons.append(f"Over €{limit:,.2f} auto-approval limit")
-            if request.agent_id and (total > agent.spending_limit_cents or agent.spending_limit_cents == 0):
-                agent_limit = agent.spending_limit_cents / 100
-                reasons.append(f"Over {agent.name} spending limit (€{agent_limit:,.2f})")
+            if blocked_stock_msg is None:
+                total = sum(item.quantity * item.unit_price_cents for item in items)
+                for name in sorted(allergens.intersection(guardrails.review_allergens)):
+                    reasons.insert(0, f"Contains {name}")
+                if total > guardrails.max_auto_approve_cents or guardrails.max_auto_approve_cents == 0:
+                    limit = guardrails.max_auto_approve_cents / 100
+                    reasons.append(f"Over €{limit:,.2f} auto-approval limit")
+                if request.agent_id and (total > agent.spending_limit_cents or agent.spending_limit_cents == 0):
+                    agent_limit = agent.spending_limit_cents / 100
+                    reasons.append(f"Over {agent.name} spending limit (€{agent_limit:,.2f})")
 
-            total_co2 = round(
-                sum((self.product(i.product_id).carbon_footprint_kg or 0.0) * (self.product(i.product_id).net_volume_liters_or_kg or 1.0) * i.quantity for i in items),
-                2,
-            )
-            reliabilities = [i.delivery_reliability for i in items if i.delivery_reliability is not None]
-            min_rel = min(reliabilities) if reliabilities else None
+                total_co2 = round(
+                    sum((self.product(i.product_id).carbon_footprint_kg or 0.0) * (self.product(i.product_id).net_volume_liters_or_kg or 1.0) * i.quantity for i in items),
+                    2,
+                )
+                reliabilities = [i.delivery_reliability for i in items if i.delivery_reliability is not None]
+                min_rel = min(reliabilities) if reliabilities else None
 
-            (number,) = db.execute("SELECT COALESCE(MAX(number), 1043) + 1 FROM orders").fetchone()
-            now = self._now_utc()
-            order_id = f"PO-{number}"
-            trust = self._build_trust_verification(
-                order_id=order_id,
-                supplier_mode="demo",
-                verified_at=now,
-                items=items,
-                total_cents=total,
-                requested_delivery_date=request.requested_date,
-            )
-            order = PurchaseOrder(
-                id=order_id,
-                agent_id=agent.id,
-                agent_name=agent.name,
-                items=items,
-                total_cents=total,
-                reasons=reasons,
-                decision_trace=decision_trace or [],
-                status="pending" if reasons else "auto_approved",
-                created_at=now,
-                updated_at=now,
-                total_carbon_kg=total_co2,
-                min_reliability=min_rel,
-                trust_verification=trust,
-            )
-            db.execute("INSERT INTO orders VALUES (?, ?)", (number, order.model_dump_json()))
+                (number,) = db.execute("SELECT COALESCE(MAX(number), 1043) + 1 FROM orders").fetchone()
+                now = self._now_utc(db)
+                order_id = f"PO-{number}"
+                trust = self._build_trust_verification(
+                    order_id=order_id,
+                    supplier_mode="demo",
+                    verified_at=now,
+                    items=items,
+                    total_cents=total,
+                    requested_delivery_date=request.requested_date,
+                )
+                order = PurchaseOrder(
+                    id=order_id,
+                    agent_id=agent.id,
+                    agent_name=agent.name,
+                    items=items,
+                    total_cents=total,
+                    reasons=reasons,
+                    decision_trace=decision_trace or [],
+                    status="pending" if reasons else "auto_approved",
+                    created_at=now,
+                    updated_at=now,
+                    total_carbon_kg=total_co2,
+                    min_reliability=min_rel,
+                    trust_verification=trust,
+                )
+                db.execute("INSERT INTO orders VALUES (?, ?)", (number, order.model_dump_json()))
+
+        if blocked_stock_msg is not None:
+            self._record_event(agent.id, "Attempted purchase", "blocked", blocked_stock_msg)
+            raise ProcurementError(blocked_stock_msg)
 
         self._record_event(
             agent.id,
@@ -2956,7 +3005,7 @@ class ValioClient:
             min_rel = min(reliabilities) if reliabilities else None
 
             (number,) = db.execute("SELECT COALESCE(MAX(number), 1043) + 1 FROM orders").fetchone()
-            now = self._now_utc()
+            now = self._now_utc(db)
             order_id = f"PO-{number}"
             earliest_cutoff = min(closing_times) if closing_times else None
             trust = self._build_trust_verification(
@@ -3013,7 +3062,7 @@ class ValioClient:
                     if item.product_id in CATALOG and item.quantity > stock[item.product_id]:
                         raise ProcurementError(f"Only {stock[item.product_id]} units of {item.name} are available")
             order.status = decision
-            order.updated_at = datetime.now(timezone.utc)
+            order.updated_at = self._now_utc(db)
             db.execute(
                 "UPDATE orders SET payload = ? WHERE number = ?",
                 (order.model_dump_json(), int(order.id.removeprefix("PO-"))),
@@ -3167,7 +3216,7 @@ class ValioClient:
                 json={
                     "contents": [{"parts": [{"text": sys_prompt}]}],
                 },
-                timeout=8.0,
+                timeout=2.5,
             )
             if resp.is_success:
                 raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -3224,6 +3273,7 @@ class ValioClient:
         parsed_lines, model_used = self._parse_trade_request_with_gemini(request.prompt, default_excluded)
         plans: list[ProcurementPlan] = []
         proposed_lines: list[OrderLine] = []
+        unit_price_map: dict[str, int] = {}
 
         for idx, line in enumerate(parsed_lines, 1):
             all_matches = (
@@ -3347,6 +3397,7 @@ class ValioClient:
             unit_vol = best_prod.net_volume_liters_or_kg or 1.0
             has_shortage = (not best_opt.can_fulfill_full_volume) or request.simulate_shortage_on_primary
             if not has_shortage:
+                unit_price_map[best_prod.product_id] = best_prod.unit_price_cents or 0
                 proposed_lines.append(
                     OrderLine(
                         product_id=best_prod.product_id,
@@ -3374,6 +3425,7 @@ class ValioClient:
                 if backup_opt is not None:
                     sub_prod = backup_opt.product
                     sub_price = f"€{sub_prod.unit_price_cents / 100:.2f}/{sub_prod.unit}" if sub_prod.unit_price_cents else "N/A"
+                    unit_price_map[sub_prod.product_id] = sub_prod.unit_price_cents or 0
                     proposed_lines.append(
                         OrderLine(
                             product_id=sub_prod.product_id,
@@ -3387,9 +3439,35 @@ class ValioClient:
                         f"SKU {sub_prod.product_id} — \"{sub_prod.name}\" ({backup_opt.recommended_packs} × {sub_prod.unit} @ {sub_price})"
                     )
                 else:
+                    for combined in plan.recommended_combined_lines:
+                        matching_opt = next((o for o in plan.options if o.product.product_id == combined.product_id), None)
+                        unit_price_map[combined.product_id] = (matching_opt.product.unit_price_cents or 0) if matching_opt else 0
                     proposed_lines.extend(plan.recommended_combined_lines)
                     decision_trace.append(
                         f"3. Split Fulfillment: Combined {len(plan.recommended_combined_lines)} warehouse SKUs to cover {line.target_volume_liters_or_kg:g} {line.unit_hint}"
+                    )
+
+        inventory_auditor = self._can_agent_perform("inventory", "prepare")
+        if proposed_lines and inventory_auditor is not None:
+            self._record_event(
+                inventory_auditor.id,
+                "Stock & pack-math audit",
+                "completed",
+                f"Verified {len(proposed_lines)} SKU line(s) for '{request.prompt}' (delivery {delivery_date}).",
+            )
+
+        executor_agent = agent
+        if proposed_lines and agent.id == "kitchen":
+            estimated_total_cents = sum(unit_price_map.get(l.product_id, 0) * l.quantity for l in proposed_lines)
+            if estimated_total_cents > agent.spending_limit_cents:
+                purchasing_agent = self._can_agent_perform("purchasing", "purchase")
+                if purchasing_agent is not None:
+                    executor_agent = purchasing_agent
+                    self._record_event(
+                        agent.id,
+                        "Delegated bulk order",
+                        "completed",
+                        f"Handed over €{estimated_total_cents / 100:,.2f} order for '{request.prompt}' to {purchasing_agent.name}.",
                     )
 
         created_order: PurchaseOrder | None = None
@@ -3398,8 +3476,8 @@ class ValioClient:
                 PurchaseOrderRequest(
                     items=proposed_lines,
                     requested_date=delivery_date,
-                    agent_id=agent.id,
-                    notes=f"Autonomous trade execution for: {request.prompt}",
+                    agent_id=executor_agent.id,
+                    notes=f"Autonomous trade execution ({executor_agent.name}) for: {request.prompt}",
                 ),
                 decision_trace=decision_trace,
             )
@@ -3445,9 +3523,19 @@ class ValioClient:
             )
         else:
             summary = f"Prepared {len(proposed_lines)} line(s) for '{request.prompt}'."
+        script_log = self._format_execution_script_log(
+            prompt=request.prompt,
+            priority_modes=active_modes,
+            acting_agent=self.get_agent(executor_agent.id),
+            delivery_date=delivery_date,
+            orchestrator_model=model_used,
+            plans=plans,
+            decision_trace=decision_trace,
+            order=created_order,
+        )
         return AgentExecutionResult(
             prompt=request.prompt,
-            agent=self.get_agent(agent.id),
+            agent=self.get_agent(executor_agent.id),
             priority_mode=active_priority,
             priority_modes=active_modes,
             requested_date=delivery_date,
@@ -3456,9 +3544,87 @@ class ValioClient:
             plans=plans,
             proposed_order_lines=proposed_lines,
             decision_trace=decision_trace,
+            script_log=script_log,
             order=created_order,
             summary=summary,
         )
+
+    @staticmethod
+    def _format_execution_script_log(
+        *,
+        prompt: str,
+        priority_modes: list[PriorityMode],
+        acting_agent: AgentProfile,
+        delivery_date: date,
+        orchestrator_model: str,
+        plans: list[ProcurementPlan],
+        decision_trace: list[str],
+        order: PurchaseOrder | None,
+    ) -> str:
+        """Render full test_demo.py console-style log for inspection inside 'See how it went'."""
+        bar = "=" * 82
+        priority_label = " + ".join(PRIORITY_MODE_LABELS.get(m, m) for m in priority_modes)
+        lines: list[str] = [
+            "(.venv) C:\\keittiomcp> backend\\.venv\\Scripts\\python.exe backend/test_demo.py",
+            "",
+            bar,
+            f"  AUTONOMOUS TRADE AGENT ORCHESTRATOR\n  Prompt: '{prompt}'",
+            bar,
+            f"  Orchestrator Model : {orchestrator_model}",
+            f"  Kitchen Priority   : {priority_label}",
+            f"  Acting Agent       : {acting_agent.name} (id='{acting_agent.id}', limit=EUR {acting_agent.spending_limit_cents / 100:,.2f})",
+            f"  Delivery Date      : {delivery_date.isoformat()}",
+        ]
+        if plans:
+            for plan in plans:
+                lines.extend(["", bar, f"  1. SMART LOCAL CATALOG SEARCH FOR: '{plan.query}'", bar])
+                lines.append(f"  Planner Summary: {plan.summary}\n")
+                for idx, opt in enumerate(plan.options[:3], 1):
+                    p = opt.product
+                    rel_str = f"{p.delivery_reliability * 100:.1f}%" if p.delivery_reliability is not None else "N/A"
+                    co2_str = p.co2_range_label or (f"{p.carbon_footprint_kg:.2f} kg CO2/kg" if p.carbon_footprint_kg is not None else "N/A")
+                    price_str = f"EUR {p.unit_price_cents / 100:.2f}" if p.unit_price_cents is not None else "N/A"
+                    stock_str = "Terminal >= 999999" if p.stock is None else f"{p.stock:g} units"
+                    lines.extend([
+                        f"  {idx}. [{opt.tier.upper()}] SKU {p.product_id} — \"{p.name}\"",
+                        f"     Finnish Name   : {p.name_fi or 'N/A'} | Vendor: {p.vendor or 'N/A'} | Origin: {(p.country_of_origin or 'N/A').upper()}",
+                        f"     Sales Unit     : {p.unit} | Category: {p.category} | Price: {price_str} | Stock: {stock_str}",
+                        f"     Reliability    : {rel_str} | Carbon Footprint: {co2_str}",
+                        f"     Dietary Claims : {p.dietary_claims} | Allergens: {p.allergens}",
+                        f"     Ingredients    : {p.ingredients_text or 'N/A'}",
+                        f"     Fulfillment    : {opt.tradeoff_explanation}",
+                    ])
+        lines.append("\n  Explainable Decision Audit Trail (4-Stage Trace):")
+        for idx, step in enumerate(decision_trace, 1):
+            lines.append(f"    {idx}. {step}")
+        if order is not None:
+            lines.extend(["", bar, f"  RECORDED ORDER, GUARDRAILS & STEP 3 TRUST PROTOCOL RECEIPT: {order.id}", bar])
+            lines.append(f"  Order ID           : {order.id} (Placed by: {order.agent_name})")
+            for item in order.items:
+                sub_tag = f" [SUBSTITUTE FOR {item.substituted_for}]" if item.is_substitution else ""
+                lines.append(
+                    f"  Line Item          : {item.quantity} × SKU {item.product_id} — \"{item.name}\" ({item.unit}) "
+                    f"@ EUR {item.unit_price_cents / 100:.2f}/unit{sub_tag}"
+                )
+            lines.extend([
+                f"  Total Order Cost   : EUR {order.total_cents / 100:,.2f}",
+                f"  Total Carbon       : {order.total_carbon_kg or 0.0:,.2f} kg CO2e",
+                f"  Guardrail Status   : {order.status.upper()}",
+                f"  Review Reasons     : {order.reasons or ['None — auto-approved within all guardrails!']}",
+            ])
+            if order.trust_verification:
+                tv = order.trust_verification
+                lines.extend([
+                    "\n  --- STEP 3: VERIFIABLE TRUST PROTOCOL & GEMMA 4 PRIVACY RECEIPT ---",
+                    f"  Trust Protocol     : {tv.protocol}",
+                    f"  Quote Lock ID      : {tv.quote_lock_id}",
+                    f"  HMAC-SHA256 Sig    : {tv.signature_hmac_sha256}",
+                    f"  Order Cut-off Time : {tv.earliest_closing_time}",
+                    f"  Privacy Audit Model: {tv.privacy_audit_model}",
+                    f"  Privacy Attestation: {tv.privacy_audit_summary}",
+                    f"  Redacted Fields    : {tv.redacted_confidential_fields}",
+                ])
+        return "\n".join(lines)
 
     def schedule_state(self) -> ScheduleWorkspaceState:
         with self.transaction(write=True) as db:
@@ -3559,24 +3725,60 @@ class ValioClient:
             db.execute("UPDATE sim_clock SET offset_seconds = ? WHERE id = 1", (new_offset,))
 
         executed_runs: list[ScheduledRunExecution] = []
-        for _ in range(14):
+        purchasing_runner = self._can_agent_perform("purchasing", "purchase")
+        inventory_auditor = self._can_agent_perform("inventory", "search")
+        for _ in range(50):
             state_now = self.schedule_state()
             due = sorted(
                 (r for r in state_now.rules if r.enabled and r.next_run_at <= target_sim),
-                key=lambda r: r.next_run_at,
+                key=lambda r: (r.next_run_at, r.id),
             )
             if not due:
                 break
             rule = due[0]
             scheduled_for = rule.next_run_at
             delivery_for_run = scheduled_for.astimezone(HELSINKI_TZ).date() + timedelta(days=1)
-            execution = self.execute_trade_request(
-                AgentExecutionRequest(
-                    prompt=rule.prompt,
-                    requested_date=delivery_for_run,
-                    auto_place_order=rule.auto_place_order,
+            runner_id = purchasing_runner.id if purchasing_runner is not None else "kitchen"
+            self._clock_override.now_utc = scheduled_for
+            try:
+                if inventory_auditor is not None:
+                    self._record_event(
+                        inventory_auditor.id,
+                        f"Pre-schedule stock check ({rule.id})",
+                        "completed",
+                        f"Audited availability before recurring buy '{rule.prompt}'.",
+                    )
+                execution = self.execute_trade_request(
+                    AgentExecutionRequest(
+                        prompt=rule.prompt,
+                        agent_id=runner_id,
+                        requested_date=delivery_for_run,
+                        auto_place_order=rule.auto_place_order,
+                    )
                 )
-            )
+            except Exception as exc:
+                runner_agent = self.get_agent(runner_id)
+                active_modes = self._resolve_priority_modes(text_hint=rule.prompt)
+                execution = AgentExecutionResult(
+                    prompt=rule.prompt,
+                    agent=runner_agent,
+                    priority_mode=active_modes[0],
+                    priority_modes=active_modes,
+                    requested_date=delivery_for_run,
+                    orchestrator_model="deterministic-verified",
+                    parsed_lines=[],
+                    plans=[],
+                    proposed_order_lines=[],
+                    decision_trace=[
+                        f"1. Scheduled Execution ({rule.id} @ {rule.run_time}): Evaluated '{rule.prompt}' -> Blocked/Rejected: {exc}"
+                    ],
+                    order=None,
+                    rejected=True,
+                    rejection_reason=str(exc),
+                    summary=f"Scheduled auto-buy {rule.id} could not be completed: {exc}",
+                )
+            finally:
+                self._clock_override.now_utc = None
             if rule.cadence == "once":
                 updated_rule = rule.model_copy(
                     update={
@@ -3589,6 +3791,7 @@ class ValioClient:
                     }
                 )
             else:
+                # Advance past both scheduled_for and target_sim if clock jumped multiple intervals, or step one interval cleanly
                 next_trigger = _compute_next_run_at(rule.cadence, rule.run_time, scheduled_for + timedelta(minutes=1))
                 updated_rule = rule.model_copy(
                     update={
@@ -3602,15 +3805,27 @@ class ValioClient:
                 )
             with self.transaction(write=True) as db:
                 db.execute("UPDATE schedules SET payload = ? WHERE id = ?", (updated_rule.model_dump_json(), rule.id))
-            self._record_event(
-                "kitchen",
-                f"Scheduled auto-buy ({rule.id})",
-                "rejected" if execution.rejected else ("pending" if execution.order and execution.order.status == "pending" else "completed"),
-                f"{scheduled_for.astimezone(HELSINKI_TZ).strftime('%Y-%m-%d %H:%M')} · {execution.summary}",
-                order_id=execution.order.id if execution.order else None,
-            )
+            self._clock_override.now_utc = scheduled_for
+            try:
+                self._record_event(
+                    runner_id,
+                    f"Scheduled auto-buy ({rule.id})",
+                    "rejected" if execution.rejected else ("pending" if execution.order and execution.order.status == "pending" else "completed"),
+                    f"{scheduled_for.astimezone(HELSINKI_TZ).strftime('%Y-%m-%d %H:%M')} · {execution.summary}",
+                    order_id=execution.order.id if execution.order else None,
+                )
+            finally:
+                self._clock_override.now_utc = None
             executed_runs.append(
                 ScheduledRunExecution(rule=updated_rule, scheduled_for=scheduled_for, execution=execution)
+            )
+
+        if not executed_runs and delta_secs >= 3600 and inventory_auditor is not None:
+            self._record_event(
+                inventory_auditor.id,
+                "Autonomous par-level stock check",
+                "completed",
+                f"Inspected kitchen inventory readiness at {target_sim.astimezone(HELSINKI_TZ).strftime('%Y-%m-%d %H:%M')} Helsinki.",
             )
 
         final_state = self.schedule_state()

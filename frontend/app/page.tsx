@@ -12,11 +12,11 @@ import OrderReview from "./components/order-review";
 import RequestPlanner from "./components/request-planner";
 import AgentManagement from "./components/agent-management";
 import DecisionFlowDiagram from "./components/decision-flow-diagram";
-import WebImageReferences from "./components/web-image-references";
+import WebImageReferences, { ProductThumbnail } from "./components/web-image-references";
 import { AgentIcon, CartIcon, ApprovalIcon, ApprovedIcon } from "./components/dashboard-icons";
 import { createBrowserPreview, type ActivityEvent, type Agent } from "./lib/browser-preview";
 import {
-  api, errorMessage, money, orderRequester, sampleProducts, statusLabels,
+  api, errorMessage, formatOrderItemCapacity, money, orderRequester, sampleProducts, statusLabels,
   type AgentExecutionResult, type Allergen, type Availability, type BlockedAllergenMatches,
   type ClockAdvanceResponse, type Guardrails, type Order, type PriorityMode, type Product,
   type ScheduledOrderCadence, type ScheduledOrderRule, type ScheduleWorkspaceState,
@@ -47,16 +47,16 @@ function computeSmoothFastForwardRate(
   simNowMs: number,
   rules: ScheduledOrderRule[],
 ): { rate: number; slowingForRule: ScheduledOrderRule | null } {
-  const enabled = rules
-    .filter((r) => r.enabled)
+  const future = rules
+    .filter((r) => r.enabled && new Date(r.next_run_at).getTime() > simNowMs)
     .sort((a, b) => new Date(a.next_run_at).getTime() - new Date(b.next_run_at).getTime());
-  const nextRule = enabled[0];
-  if (!nextRule) return { rate: 7200, slowingForRule: null };
-  const secsUntil = Math.max(0, (new Date(nextRule.next_run_at).getTime() - simNowMs) / 1000);
-  if (secsUntil <= 90) return { rate: 15, slowingForRule: nextRule };
-  if (secsUntil <= 600) return { rate: 120, slowingForRule: nextRule };
-  if (secsUntil <= 3600) return { rate: 900, slowingForRule: nextRule };
-  return { rate: 7200, slowingForRule: null };
+  const nextRule = future[0];
+  if (!nextRule) return { rate: 14400, slowingForRule: null };
+  const secsUntil = (new Date(nextRule.next_run_at).getTime() - simNowMs) / 1000;
+  if (secsUntil <= 60) return { rate: 30, slowingForRule: nextRule };
+  if (secsUntil <= 300) return { rate: 360, slowingForRule: nextRule };
+  if (secsUntil <= 3600) return { rate: 3600, slowingForRule: null };
+  return { rate: 21600, slowingForRule: null };
 }
 
 function parseSetupPreferencesFromChat(text: string): { allergens?: Allergen[]; priorities?: PriorityMode[] } | null {
@@ -184,6 +184,8 @@ export default function Dashboard() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [thinkingProgress, setThinkingProgress] = useState(0);
+  const [showRecurringStrip, setShowRecurringStrip] = useState(true);
   const [selection, setSelection] = useState<{ product: Product; sample: boolean; quantity?: number; date?: string; substitutedFor?: string } | null>(null);
   const [showSamples, setShowSamples] = useState(false);
   const [scheduleState, setScheduleState] = useState<ScheduleWorkspaceState | null>(null);
@@ -203,6 +205,7 @@ export default function Dashboard() {
   const visualExtraMsRef = useRef(0);
   const scheduleStateRef = useRef<ScheduleWorkspaceState | null>(null);
   const prefsBootstrapped = useRef(false);
+  const chatLogRef = useRef<HTMLDivElement>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
   const chatInput = useRef<HTMLInputElement>(null);
   const reviewAnchor = useRef<HTMLDivElement>(null);
@@ -295,6 +298,17 @@ export default function Dashboard() {
     }
   }
 
+  async function syncWorkspaceQuietly(signal?: AbortSignal) {
+    try {
+      const fresh = await request<Workspace>("workspace", "GET", undefined, signal);
+      if (signal?.aborted) return;
+      setWorkspace(fresh);
+      await refreshSideData(signal);
+    } catch {
+      /* Ignore background sync error */
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController();
     void loadWorkspace(controller.signal);
@@ -302,12 +316,14 @@ export default function Dashboard() {
   }, [preview, previewVersion]);
 
   useEffect(() => {
-    if (messages.length) chatEnd.current?.scrollIntoView({ block: "nearest" });
+    if (!messages.length && !sending) return;
+    const el = chatLogRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages, sending]);
 
   useEffect(() => {
-    if (selection) reviewAnchor.current?.focus({ preventScroll: false });
-  }, [selection]);
+    if (selection) reviewAnchor.current?.focus({ preventScroll: view === "overview" });
+  }, [selection, view]);
 
   function updateOrder(order: Order) {
     setWorkspace((previous) => previous && {
@@ -386,21 +402,39 @@ export default function Dashboard() {
       const nextState: ScheduleWorkspaceState = { simulated_now: res.simulated_now, real_now: res.real_now, offset_seconds: res.offset_seconds, rules: res.rules };
       scheduleStateRef.current = nextState;
       setScheduleState(nextState);
-      if (options.reset) {
-        setIsFastForwarding(false);
-        visualExtraMsRef.current = 0;
-        setVisualSimNowMs(Date.now() + res.offset_seconds * 1000);
-      }
+      visualExtraMsRef.current = 0;
+      setVisualSimNowMs(Date.now() + res.offset_seconds * 1000);
       if (res.executed_runs.length > 0) {
-        const newMessages: Message[] = res.executed_runs.map((run) => ({
-          role: "agent",
-          headline: `Scheduled Auto-Buy Executed · ${run.rule.id}`,
-          text: `${dates.format(new Date(run.scheduled_for))} — ${run.execution.summary}`,
-          execution: run.execution,
-          thinking: run.execution.decision_trace,
-        }));
+        const createdOrders = res.executed_runs
+          .map((run) => run.execution.order)
+          .filter((order): order is Order => Boolean(order));
+        if (createdOrders.length > 0) {
+          setWorkspace((prev) => {
+            if (!prev) return prev;
+            const createdIds = new Set(createdOrders.map((o) => o.id));
+            return {
+              ...prev,
+              orders: [...createdOrders, ...prev.orders.filter((o) => !createdIds.has(o.id))],
+            };
+          });
+        }
+        const newMessages: Message[] = res.executed_runs.flatMap((run) => [
+          {
+            role: "user" as const,
+            text: `Scheduled (${run.rule.id} @ ${run.rule.run_time}): ${run.rule.prompt}`,
+          },
+          {
+            role: "agent" as const,
+            headline: `Scheduled Auto-Buy Executed · ${run.rule.id}`,
+            text: `${dates.format(new Date(run.scheduled_for))} — ${run.execution.summary}`,
+            execution: run.execution,
+            thinking: run.execution.decision_trace,
+          },
+        ]);
         setMessages((prev) => [...prev, ...newMessages]);
-        await loadWorkspace(undefined, true);
+        void syncWorkspaceQuietly();
+      } else if (options.reset || (options.seconds ?? 0) >= 3600 || options.hours || options.days) {
+        void refreshSideData();
       }
     } catch (error) {
       setIsFastForwarding(false);
@@ -481,6 +515,20 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    if (!decisionNotice) return;
+    const timer = window.setTimeout(() => setDecisionNotice(""), 3500);
+    return () => window.clearTimeout(timer);
+  }, [decisionNotice]);
+
+  useEffect(() => {
+    if (!sending) return;
+    const timer = window.setInterval(() => {
+      setThinkingProgress((prev) => (prev >= 94 ? prev : Math.min(94, prev + Math.max(0.45, (94 - prev) * 0.055))));
+    }, 80);
+    return () => window.clearInterval(timer);
+  }, [sending]);
+
+  useEffect(() => {
     scheduleStateRef.current = scheduleState;
     if (!isFastForwarding && scheduleState) {
       setVisualSimNowMs(Date.now() + scheduleState.offset_seconds * 1000);
@@ -500,10 +548,22 @@ export default function Dashboard() {
         const st = scheduleStateRef.current;
         const baseSimMs = Date.now() + (st?.offset_seconds ?? 0) * 1000;
         const currentSimMs = baseSimMs + visualExtraMsRef.current;
-        const { rate } = computeSmoothFastForwardRate(currentSimMs, st?.rules ?? []);
+        const enabledRules = (st?.rules ?? []).filter((r) => r.enabled);
+        const alreadyDue = enabledRules.some((r) => new Date(r.next_run_at).getTime() <= currentSimMs);
+        const { rate } = computeSmoothFastForwardRate(currentSimMs, enabledRules);
 
-        if (!clockTickBusy.current && !sending && !activeAction) {
-          visualExtraMsRef.current += dtSec * rate * 1000;
+        if (!clockTickBusy.current && !sending && !activeAction && !alreadyDue) {
+          let stepMs = dtSec * rate * 1000;
+          const nextFuture = enabledRules
+            .filter((r) => new Date(r.next_run_at).getTime() > currentSimMs)
+            .sort((a, b) => new Date(a.next_run_at).getTime() - new Date(b.next_run_at).getTime())[0];
+          if (nextFuture) {
+            const stopAtMs = new Date(nextFuture.next_run_at).getTime() + 1000;
+            if (currentSimMs + stepMs > stopAtMs) {
+              stepMs = Math.max(0, stopAtMs - currentSimMs);
+            }
+          }
+          visualExtraMsRef.current += stepMs;
         }
         const nextVisualMs = baseSimMs + visualExtraMsRef.current;
 
@@ -512,12 +572,12 @@ export default function Dashboard() {
           setVisualSimNowMs(nextVisualMs);
         }
 
-        const crossedRule = st?.rules.some((r) => r.enabled && new Date(r.next_run_at).getTime() <= nextVisualMs);
-        const pendingSecs = Math.floor(visualExtraMsRef.current / 1000);
-        if ((crossedRule || (pendingSecs >= 5 && now - lastSync >= 400)) && !clockTickBusy.current && !sending && !activeAction) {
+        const crossedRule = enabledRules.some((r) => new Date(r.next_run_at).getTime() <= nextVisualMs);
+        const pendingSecs = Math.max(0, Math.ceil(visualExtraMsRef.current / 1000));
+        if ((crossedRule || (pendingSecs >= 3 && now - lastSync >= 650)) && !clockTickBusy.current && !sending && !activeAction) {
           lastSync = now;
           const delta = Math.max(1, pendingSecs);
-          visualExtraMsRef.current = Math.max(0, visualExtraMsRef.current - delta * 1000);
+          visualExtraMsRef.current = 0;
           void advanceClock({ seconds: delta });
         }
 
@@ -775,6 +835,7 @@ export default function Dashboard() {
     if (!message || sending || activeAction || !workspace) return;
     setInput("");
     setMessages((previous) => [...previous, { role: "user", text: message }]);
+    setThinkingProgress(6);
     setSending(true);
     let reply: Omit<Message, "role">;
     try {
@@ -783,8 +844,11 @@ export default function Dashboard() {
       reply = { text: errorMessage(error) };
       void refreshSideData();
     }
+    setThinkingProgress(100);
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
     setMessages((previous) => [...previous, { role: "agent", ...reply }]);
     setSending(false);
+    setThinkingProgress(0);
   }
 
   const pending = workspace?.orders.filter((order) => order.status === "pending") ?? [];
@@ -818,39 +882,83 @@ export default function Dashboard() {
     }
 
     return <div className="activity-list">
-      {orders.map((order) => <details key={order.id} className="activity-entry">
-        <summary>
-          <div><strong>{order.id}</strong><span className="order-products">{describeOrder(order)}</span><span className="order-requester">{orderRequester(order)}</span><time dateTime={order.updated_at}>{dates.format(new Date(order.updated_at))}</time></div>
-          <span className={`status ${order.status}`}><span />{statusLabels[order.status]}</span>
-          <strong>{money(order.total_cents)}</strong>
-        </summary>
-        <div className="activity-details">
-          <p>{describeOrder(order)}</p>
-          {order.reasons.length > 0 && <ul>{order.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
-          {order.decision_trace && order.decision_trace.length > 0 && (
-            <div className="order-timeline">
-              <h3>Agent decision steps</h3>
-              <ol>{order.decision_trace.map((step, sIdx) => <li key={sIdx}><span>{step}</span></li>)}</ol>
+      {orders.map((order) => {
+        const leadItem = order.items[0];
+        return <details key={order.id} className="activity-entry">
+          <summary className="activity-summary">
+            {leadItem ? (
+              <div className="activity-item-media" onClick={(e) => e.stopPropagation()}>
+                <ProductThumbnail productId={leadItem.product_id} query={leadItem.name} alt={leadItem.name} />
+                {order.items.length > 1 && (
+                  <span className="activity-more-badge" title={`${order.items.length} products in order`}>
+                    +{order.items.length - 1}
+                  </span>
+                )}
+              </div>
+            ) : null}
+            <div className="activity-summary-body">
+              <strong>{order.id}</strong>
+              <span className="order-products">{describeOrder(order)}</span>
+              <span className="order-requester">{orderRequester(order)}</span>
+              <time dateTime={order.updated_at}>{dates.format(new Date(order.updated_at))}</time>
             </div>
-          )}
-          {(preview || Boolean(workspace)) && events.some((event) => event.order_id === order.id) && <div className="order-timeline">
-            <h3>Order history</h3>
-            <ol>{events.filter((event) => event.order_id === order.id).map((event) => <li key={event.id}>
-              <strong>{event.action}</strong><p>{event.detail}</p><time dateTime={event.timestamp}>{dates.format(new Date(event.timestamp))}</time>
-            </li>)}</ol>
-          </div>}
-          {order.trust_verification && <dl className="review-facts">
-            <div><dt>Verification protocol</dt><dd>{order.trust_verification.protocol}</dd></div>
-            <div><dt>Verified at</dt><dd>{order.trust_verification.verified_at}</dd></div>
-            <div><dt>Supplier mode</dt><dd>{order.trust_verification.supplier_mode}</dd></div>
-            <div><dt>Requested delivery</dt><dd>{order.trust_verification.requested_delivery_date ?? "Unconfirmed"}</dd></div>
-            {order.trust_verification.earliest_closing_time && <div><dt>Order cutoff</dt><dd>{order.trust_verification.earliest_closing_time}</dd></div>}
-            {order.trust_verification.quote_lock_id && <div><dt>Quote lock ID</dt><dd><code>{order.trust_verification.quote_lock_id}</code></dd></div>}
-            {order.trust_verification.signature_hmac_sha256 && <div><dt>HMAC-SHA256 signature</dt><dd><code>{order.trust_verification.signature_hmac_sha256.slice(0, 18)}…</code></dd></div>}
-            {order.trust_verification.privacy_audit_summary && <div><dt>Privacy & margin protection</dt><dd>{order.trust_verification.privacy_audit_summary}</dd></div>}
-          </dl>}
-        </div>
-      </details>)}
+            <span className={`status ${order.status}`}><span />{statusLabels[order.status]}</span>
+            <strong className="activity-total">{money(order.total_cents)}</strong>
+          </summary>
+          <div className="activity-details">
+            <ul className="approval-items activity-items">
+              {order.items.map((item, idx) => {
+                const cap = formatOrderItemCapacity(item.quantity, item.unit);
+                const lineCents = item.unit_price_cents != null ? item.unit_price_cents * item.quantity : null;
+                return (
+                  <li key={`${item.product_id}:${idx}`} className="approval-item-row">
+                    <div className="approval-item-media">
+                      <ProductThumbnail productId={item.product_id} query={item.name} alt={item.name} />
+                    </div>
+                    <div className="approval-item-main">
+                      <span className="approval-item-name">{item.name}</span>
+                      <span className="approval-item-sub">
+                        <code>SKU {item.product_id}</code>
+                        {cap.perPackLabel ? ` · ${cap.perPackLabel}` : ""}
+                        {item.unit_price_cents != null ? ` · ${money(item.unit_price_cents)}/unit` : ""}
+                      </span>
+                    </div>
+                    <div className="approval-item-metrics">
+                      <strong>
+                        {item.quantity.toLocaleString("en-GB")}×{cap.totalLabel ? ` (${cap.totalLabel})` : ` · ${item.unit}`}
+                      </strong>
+                      {lineCents != null && <span className="approval-item-price">{money(lineCents)}</span>}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            {order.reasons.length > 0 && <ul>{order.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
+            {order.decision_trace && order.decision_trace.length > 0 && (
+              <div className="order-timeline">
+                <h3>Agent decision steps</h3>
+                <ol>{order.decision_trace.map((step, sIdx) => <li key={sIdx}><span>{step}</span></li>)}</ol>
+              </div>
+            )}
+            {(preview || Boolean(workspace)) && events.some((event) => event.order_id === order.id) && <div className="order-timeline">
+              <h3>Order history</h3>
+              <ol>{events.filter((event) => event.order_id === order.id).map((event) => <li key={event.id}>
+                <strong>{event.action}</strong><p>{event.detail}</p><time dateTime={event.timestamp}>{dates.format(new Date(event.timestamp))}</time>
+              </li>)}</ol>
+            </div>}
+            {order.trust_verification && <dl className="review-facts">
+              <div><dt>Verification protocol</dt><dd>{order.trust_verification.protocol}</dd></div>
+              <div><dt>Verified at</dt><dd>{order.trust_verification.verified_at}</dd></div>
+              <div><dt>Supplier mode</dt><dd>{order.trust_verification.supplier_mode}</dd></div>
+              <div><dt>Requested delivery</dt><dd>{order.trust_verification.requested_delivery_date ?? "Unconfirmed"}</dd></div>
+              {order.trust_verification.earliest_closing_time && <div><dt>Order cutoff</dt><dd>{order.trust_verification.earliest_closing_time}</dd></div>}
+              {order.trust_verification.quote_lock_id && <div><dt>Quote lock ID</dt><dd><code>{order.trust_verification.quote_lock_id}</code></dd></div>}
+              {order.trust_verification.signature_hmac_sha256 && <div><dt>HMAC-SHA256 signature</dt><dd><code>{order.trust_verification.signature_hmac_sha256.slice(0, 18)}…</code></dd></div>}
+              {order.trust_verification.privacy_audit_summary && <div><dt>Privacy & margin protection</dt><dd>{order.trust_verification.privacy_audit_summary}</dd></div>}
+            </dl>}
+          </div>
+        </details>;
+      })}
     </div>;
   }
 
@@ -887,6 +995,7 @@ export default function Dashboard() {
           <div><dt>Delivery reliability</dt><dd>{product.delivery_reliability == null ? "Unconfirmed" : `${(product.delivery_reliability * 100).toFixed(1)}%`}</dd></div>
           <div><dt>Supplier sustainability labels</dt><dd>{product.sustainability_labels?.join(", ") || "No labels supplied"}</dd></div>
           <div><dt>Dietary claims</dt><dd>{product.dietary_claims?.join(", ") || "Unconfirmed"}</dd></div>
+          {product.ingredients_text && <div><dt>Ingredients</dt><dd>{product.ingredients_text}</dd></div>}
           {product.comparison_price_cents != null && product.comparison_unit && <div><dt>Comparison price</dt><dd>{money(product.comparison_price_cents)} / {product.comparison_unit}</dd></div>}
         </dl>
         {product.substitute_reason && <p className="decision-note">{product.substitute_tier && <strong>{product.substitute_tier} · </strong>}{product.substitute_reason}</p>}
@@ -939,7 +1048,7 @@ export default function Dashboard() {
                 {darkMode ? <Sun size={13} /> : <Moon size={13} />}
                 <span>{darkMode ? "Light" : "Dark"}</span>
               </button>
-              <button className="secondary-button" type="button" disabled={Boolean(activeAction) || sending} onClick={() => switchMode(!preview)}>{preview ? "Use service connection" : "Start browser preview"}</button>
+              {preview && <button className="secondary-button" type="button" disabled={Boolean(activeAction) || sending} onClick={() => switchMode(false)}>Use service connection</button>}
             </div>
           </div>
         </div>
@@ -971,15 +1080,6 @@ export default function Dashboard() {
         </div>}
         {actionError && <p className="error workspace-error" role="alert">{actionError}</p>}
         {decisionNotice && view !== "approvals" && <p className="decision-feedback" role="status">{decisionNotice}</p>}
-
-        {view === "overview" && <div className="control-content overview-content">
-          <dl className="metric-grid">
-            <div className="panel metric-card"><div className="metric-icon sky"><AgentIcon /></div><dt>Connected agents</dt><dd>{preview || workspace ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : workspace ? "Verified external trade agents" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
-            <div className="panel metric-card"><div className="metric-icon blue"><CartIcon /></div><dt>Orders updated today</dt><dd>{workspace ? changedToday : "—"}</dd><small>Helsinki time</small><button type="button" className="text-button" onClick={() => setView("activity")}>View activity <ArrowRight size={16} /></button></div>
-            <div className="panel metric-card"><div className="metric-icon turquoise"><ApprovalIcon /></div><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><small>{pending.length ? "A decision needs your attention" : "No pending decisions"}</small><button type="button" className="primary-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={16} /></button></div>
-            <div className="panel metric-card"><div className="metric-icon orange"><ApprovedIcon /></div><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small><button type="button" className="text-button" onClick={() => setView("policies")}>View policies <ArrowRight size={16} /></button></div>
-          </dl>
-        </div>}
 
         {view === "agents" && (preview || Boolean(workspace)) && <AgentManagement agents={agents} request={request} busy={Boolean(activeAction) || sending} onBusy={setActiveAction} onChanged={() => void loadWorkspace(undefined, true)} />}
         {view === "agents" && !preview && !workspace && <section className="panel control-empty">
@@ -1028,6 +1128,15 @@ export default function Dashboard() {
                       <Award size={12} />
                       Priority: {activePriorityList(workspace.guardrails).map((m) => priorityOptions.find((o) => o.id === m)?.shortLabel ?? m).join(" + ")}
                     </span>
+                    {!showRecurringStrip && (
+                      <button
+                        type="button"
+                        className="schedule-restore-btn"
+                        onClick={() => setShowRecurringStrip(true)}
+                      >
+                        <CalendarClock size={12} /> Show auto-buys
+                      </button>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -1041,29 +1150,37 @@ export default function Dashboard() {
                   </button>
                 </div>
 
-                <div className="kitchen-schedule-strip" role="region" aria-label="Recurring and timed auto-buys">
-                  <div className="kitchen-schedule-strip-head">
-                    <span className="kitchen-schedule-title">
-                      <CalendarClock size={13} /> Recurring &amp; timed auto-buys
-                      {(scheduleState?.rules.filter((r) => r.enabled).length ?? 0) > 0 && (
-                        <span className="setup-summary-pill is-accent">{scheduleState?.rules.filter((r) => r.enabled).length} active</span>
-                      )}
-                    </span>
-                    <button type="button" className="text-button quick-setup-btn" onClick={() => setShowScheduleForm((v) => !v)}>
-                      <Plus size={13} /> {showScheduleForm ? "Close form" : "Schedule auto-buy"}
-                    </button>
-                  </div>
+                {showRecurringStrip && (
+                  <div className="kitchen-schedule-strip" role="region" aria-label="Recurring and timed auto-buys">
+                    <div className="kitchen-schedule-strip-head">
+                      <span className="kitchen-schedule-title">
+                        <CalendarClock size={13} /> Recurring &amp; timed auto-buys
+                        {(scheduleState?.rules.filter((r) => r.enabled).length ?? 0) > 0 && (
+                          <span className="setup-summary-pill is-accent">{scheduleState?.rules.filter((r) => r.enabled).length} active</span>
+                        )}
+                      </span>
+                      <div className="kitchen-schedule-strip-actions">
+                        <button type="button" className="text-button quick-setup-btn" onClick={() => setShowScheduleForm((v) => !v)}>
+                          <Plus size={13} /> {showScheduleForm ? "Close form" : "Schedule auto-buy"}
+                        </button>
+                        <button type="button" className="text-button schedule-hide-btn" onClick={() => setShowRecurringStrip(false)}>
+                          Hide
+                        </button>
+                      </div>
+                    </div>
                   {showScheduleForm && (
                     <form className="schedule-inline-form" onSubmit={(e) => {
                       e.preventDefault();
                       if (!schedPrompt.trim()) return;
-                      void createScheduleRule(schedPrompt.trim(), schedCadence, schedTime).then(() => setShowScheduleForm(false));
+                      void createScheduleRule(schedPrompt.trim(), schedCadence, schedTime).then(() => {
+                        setSchedPrompt("");
+                      }).catch((err) => setActionError(errorMessage(err)));
                     }}>
                       <input
                         type="text"
                         value={schedPrompt}
                         maxLength={200}
-                        placeholder="e.g. 20 L lactose-free milk"
+                        placeholder="e.g. 20 L of banana yogurt"
                         onChange={(e) => setSchedPrompt(e.target.value)}
                       />
                       <select value={schedCadence} onChange={(e) => setSchedCadence(e.target.value as ScheduledOrderCadence)}>
@@ -1074,6 +1191,23 @@ export default function Dashboard() {
                       </select>
                       <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)} />
                       <button type="submit" className="secondary-button">Add</button>
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              await createScheduleRule("20 L of banana yogurt", "daily", "07:00");
+                              await createScheduleRule("30 L lactose-free milk", "daily", "07:15");
+                              await createScheduleRule("15 kg bell pepper", "daily", "07:30");
+                            } catch (err) {
+                              setActionError(errorMessage(err));
+                            }
+                          })();
+                        }}
+                      >
+                        +3 shop orders
+                      </button>
                     </form>
                   )}
                   {scheduleState && scheduleState.rules.length > 0 ? (
@@ -1103,11 +1237,12 @@ export default function Dashboard() {
                       Tip: Click <strong>Schedule auto-buy</strong> or type <code>Every day at 07:00 buy 20 L lactose-free milk</code>, then speed up the clock below Recent orders to watch it buy live.
                     </p>
                   )}
-                </div>
+                  </div>
+                )}
               </div>
             )}
 
-            <div className="chat-content" role="log" aria-label="Conversation">
+            <div ref={chatLogRef} className="chat-content" role="log" aria-label="Conversation">
               <div className="message">
                 <div className="message-icon"><Sparkles size={16} /></div>
                 <div className="message-body">
@@ -1207,13 +1342,11 @@ export default function Dashboard() {
                     <div className="thinking-bubble">
                       <div className="thinking-status-row">
                         <span className="thinking-shimmer-text">Thinking</span>
-                        <span className="thinking-dots" aria-hidden="true">
-                          <span />
-                          <span />
-                          <span />
-                        </span>
+                        <span className="thinking-pct">{Math.round(thinkingProgress)}%</span>
                       </div>
-                      <div className="thinking-wave-bar" aria-hidden="true" />
+                      <div className="thinking-progress-track" aria-hidden="true">
+                        <div className="thinking-progress-fill" style={{ width: `${Math.round(thinkingProgress)}%` }} />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1261,15 +1394,18 @@ export default function Dashboard() {
             </section>}
 
             {view === "overview" && scheduleState && (() => {
-              const { slowingForRule } = isFastForwarding
+              const dueRule = scheduleState.rules
+                .filter((r) => r.enabled && new Date(r.next_run_at).getTime() <= visualSimNowMs)
+                .sort((a, b) => new Date(a.next_run_at).getTime() - new Date(b.next_run_at).getTime())[0] ?? null;
+              const { slowingForRule } = isFastForwarding && !dueRule
                 ? computeSmoothFastForwardRate(visualSimNowMs, scheduleState.rules)
                 : { slowingForRule: null };
               const nextRule = scheduleState.rules
-                .filter((r) => r.enabled)
+                .filter((r) => r.enabled && new Date(r.next_run_at).getTime() > visualSimNowMs)
                 .sort((a, b) => new Date(a.next_run_at).getTime() - new Date(b.next_run_at).getTime())[0];
               return (
                 <section
-                  className={`panel side-clock-card ${scheduleState.offset_seconds > 0 ? "is-future" : ""} ${isFastForwarding ? "is-fast" : ""} ${slowingForRule ? "is-slowing" : ""}`}
+                  className={`panel side-clock-card ${scheduleState.offset_seconds > 0 ? "is-future" : ""} ${isFastForwarding ? "is-fast" : ""} ${slowingForRule || dueRule ? "is-slowing" : ""}`}
                   aria-label="Simulation clock controller"
                 >
                   <div className="side-clock-row">
@@ -1285,15 +1421,17 @@ export default function Dashboard() {
                           <time dateTime={new Date(visualSimNowMs).toISOString()}>{clockTimes.format(new Date(visualSimNowMs))}</time>
                         </strong>
                         <small>
-                          {slowingForRule
-                            ? `Slowing near ${slowingForRule.run_time} auto-buy`
-                            : nextRule
-                              ? `Next auto-buy: ${nextRule.run_time} (${dates.format(new Date(nextRule.next_run_at))})`
-                              : "Helsinki · Click to control clock"}
+                          {dueRule
+                            ? `Running ${dueRule.run_time} auto-buy (“${dueRule.prompt}”)`
+                            : slowingForRule
+                              ? `Slowing near ${slowingForRule.run_time} auto-buy`
+                              : nextRule
+                                ? `Next auto-buy: ${nextRule.run_time} (${dates.format(new Date(nextRule.next_run_at))})`
+                                : "Helsinki · Click to control clock"}
                         </small>
                       </div>
                       <span className={`side-clock-badge ${isFastForwarding ? "active" : ""}`}>
-                        {isFastForwarding ? (slowingForRule ? "Slowing" : "Fast") : scheduleState.offset_seconds > 0 ? formatOffsetLabel(scheduleState.offset_seconds) : "Live"}
+                        {dueRule ? "Running" : isFastForwarding ? (slowingForRule ? "Slowing" : "Fast") : scheduleState.offset_seconds > 0 ? formatOffsetLabel(scheduleState.offset_seconds) : "Live"}
                       </span>
                       <ChevronDown size={15} className={`side-clock-chevron ${clockOpen ? "is-open" : ""}`} />
                     </button>
@@ -1352,6 +1490,15 @@ export default function Dashboard() {
             })()}
           </aside>
         </div>
+
+        {view === "overview" && <div className="control-content overview-content overview-metrics-below">
+          <dl className="metric-grid">
+            <div className="panel metric-card"><div className="metric-icon sky"><AgentIcon /></div><dt>Connected agents</dt><dd>{preview || workspace ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : workspace ? "Verified external trade agents" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon blue"><CartIcon /></div><dt>Orders updated today</dt><dd>{workspace ? changedToday : "—"}</dd><small>Helsinki time</small><button type="button" className="text-button" onClick={() => setView("activity")}>View activity <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon turquoise"><ApprovalIcon /></div><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><small>{pending.length ? "A decision needs your attention" : "No pending decisions"}</small><button type="button" className="primary-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon orange"><ApprovedIcon /></div><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small><button type="button" className="text-button" onClick={() => setView("policies")}>View policies <ArrowRight size={16} /></button></div>
+          </dl>
+        </div>}
 
             {view === "policies" && <section className="panel side-panel policy-panel" aria-labelledby="guardrails-title">
               <div className="section-heading">
@@ -1449,7 +1596,31 @@ export default function Dashboard() {
                     <div className="control-heading"><h2>Order {order.id}</h2><span className="status pending"><span />Pending approval</span></div>
                     <p className="approval-timestamp">{orderRequester(order)} · Updated <time dateTime={order.updated_at}>{dates.format(new Date(order.updated_at))}</time></p>
                     <ul className="approval-items">
-                      {order.items.map((item, index) => <li key={`${item.product_id}:${index}`}><span>{item.name}</span><strong>{item.quantity.toLocaleString("en-GB")} × {item.unit}</strong></li>)}
+                      {order.items.map((item, index) => {
+                        const cap = formatOrderItemCapacity(item.quantity, item.unit);
+                        const lineCents = item.unit_price_cents != null ? item.unit_price_cents * item.quantity : null;
+                        return (
+                          <li key={`${item.product_id}:${index}`} className="approval-item-row">
+                            <div className="approval-item-media">
+                              <ProductThumbnail productId={item.product_id} query={item.name} alt={item.name} />
+                            </div>
+                            <div className="approval-item-main">
+                              <span className="approval-item-name">{item.name}</span>
+                              <span className="approval-item-sub">
+                                <code>SKU {item.product_id}</code>
+                                {cap.perPackLabel ? ` · ${cap.perPackLabel}` : ""}
+                                {item.unit_price_cents != null ? ` · ${money(item.unit_price_cents)}/unit` : ""}
+                              </span>
+                            </div>
+                            <div className="approval-item-metrics">
+                              <strong>
+                                {item.quantity.toLocaleString("en-GB")}×{cap.totalLabel ? ` (${cap.totalLabel})` : ` · ${item.unit}`}
+                              </strong>
+                              {lineCents != null && <span className="approval-item-price">{money(lineCents)}</span>}
+                            </div>
+                          </li>
+                        );
+                      })}
                     </ul>
                     <div className="approval-total"><span>Order total</span><strong>{money(order.total_cents)}</strong></div>
                     <div className="decision-note attention"><strong>Why this needs approval</strong>

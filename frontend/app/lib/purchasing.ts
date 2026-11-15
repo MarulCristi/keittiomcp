@@ -11,6 +11,7 @@ export type Product = {
   country_of_origin?: string | null;
   unit: string;
   net_volume_liters_or_kg?: number | null;
+  ingredients_text?: string | null;
   unit_price_cents: number | null;
   stock: number | null;
   allergens: Allergen[] | null;
@@ -75,6 +76,7 @@ export type AgentExecutionResult = {
   plans?: { query?: string; target_volume_liters_or_kg?: number; summary?: string; options: FulfillmentPlanOption[] }[];
   order: Order | null;
   decision_trace: string[];
+  script_log?: string | null;
   rejected?: boolean;
   rejection_reason?: string | null;
   rejected_products?: Product[];
@@ -128,6 +130,39 @@ export type Availability = {
 export const money = (cents: number) => new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" }).format(cents / 100);
 export const statusLabels = { pending: "Pending approval", auto_approved: "Auto-approved", approved: "Approved", rejected: "Rejected" };
 
+/** Parse unit capacity (e.g. "Case/KI (5 L)" -> 5 L) and return total order capacity plus per-unit size. */
+export function formatOrderItemCapacity(quantity: number, unit: string): { totalLabel: string | null; perPackLabel: string | null } {
+  const match = unit.match(/(\d+(?:[.,]\d+)?)\s*(ml|dl|l|kg|g)\b/i);
+  if (!match) return { totalLabel: null, perPackLabel: null };
+  const raw = Number(match[1].replace(",", "."));
+  const rawUnit = match[2].toLowerCase();
+  if (!Number.isFinite(raw) || raw <= 0) return { totalLabel: null, perPackLabel: null };
+
+  let perPack = raw;
+  let canonicalUnit: "L" | "kg" = "kg";
+  if (rawUnit === "ml") {
+    perPack = raw / 1000;
+    canonicalUnit = "L";
+  } else if (rawUnit === "dl") {
+    perPack = raw / 10;
+    canonicalUnit = "L";
+  } else if (rawUnit === "l") {
+    canonicalUnit = "L";
+  } else if (rawUnit === "g") {
+    perPack = raw / 1000;
+    canonicalUnit = "kg";
+  } else {
+    canonicalUnit = "kg";
+  }
+
+  const total = Number((quantity * perPack).toFixed(2));
+  const perPackRounded = Number(perPack.toFixed(3));
+  return {
+    totalLabel: `${total.toLocaleString("en-GB")} ${canonicalUnit}`,
+    perPackLabel: `${perPackRounded.toLocaleString("en-GB")} ${canonicalUnit}/unit`,
+  };
+}
+
 // Prefer an explicit identity supplied with the order; never infer a person from approval status.
 export function orderRequester(order: Pick<Order, "agent_name" | "agent_id" | "buyer_name">) {
   if (order.agent_name?.trim()) return `Requested by ${order.agent_name.trim()} · Agent`;
@@ -157,8 +192,28 @@ export async function api<T>(path: string, method = "GET", body?: object, signal
     ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
   });
   if (!response.ok) {
-    const error = await response.json().catch(() => null);
-    throw new Error(typeof error?.detail === "string" ? error.detail : "The purchasing service could not complete the request. Please try again.");
+    const rawText = await response.text().catch(() => "");
+    let error: { detail?: unknown } | null = null;
+    try {
+      error = rawText ? (JSON.parse(rawText) as { detail?: unknown }) : null;
+    } catch {
+      error = null;
+    }
+    if (typeof error?.detail === "string" && error.detail.trim()) {
+      throw new Error(error.detail);
+    }
+    if (Array.isArray(error?.detail) && error.detail.length > 0) {
+      const first = error.detail[0] as { msg?: string; loc?: unknown[] };
+      const msg = typeof first?.msg === "string" ? first.msg : JSON.stringify(error.detail[0]);
+      throw new Error(`Invalid request: ${msg}`);
+    }
+    if (response.status === 502 || response.status === 504) {
+      throw new Error("The purchasing backend (port 8000) did not respond in time or is restarting. Wait a moment and try again.");
+    }
+    if (response.status >= 500) {
+      throw new Error(`The purchasing service returned HTTP ${response.status}. Wait a moment or check the backend terminal, then try again.`);
+    }
+    throw new Error("The purchasing service could not complete the request. Please try again.");
   }
   return response.json() as Promise<T>;
 }

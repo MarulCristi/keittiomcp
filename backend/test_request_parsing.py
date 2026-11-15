@@ -313,6 +313,64 @@ class CatalogAndErrorTests(unittest.TestCase):
         reset_state = self.client.advance_clock(ClockAdvanceRequest(reset=True))
         self.assertEqual(reset_state.offset_seconds, 0)
 
+    def test_yogurt_spelling_and_multiple_schedules_resilience(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        from valio_client import ClockAdvanceRequest, CreateScheduleRequest
+
+        # US spelling 'yogurt' must match Valio/Arla 'yoghurt' SKUs cleanly
+        yoghurt = Product(
+            product_id="YOG-1",
+            name="Arla AB-Banana yoghurt 1 kg lactose free",
+            name_fi="Arla AB Banaanijogurtti 1 kg laktoositon",
+            category="10411",
+            unit="1 kg",
+            unit_price_cents=320,
+            net_volume_liters_or_kg=1.0,
+            allergens=["milk"],
+            dietary_claims=["lactose_free"],
+            delivery_reliability=0.99,
+            stock=40,
+        )
+        milk = Product(
+            product_id="MILK-1",
+            name="Valio Eila lactose-free milk 1 L",
+            category="10400",
+            unit="1 L",
+            unit_price_cents=189,
+            net_volume_liters_or_kg=1.0,
+            allergens=["milk"],
+            dietary_claims=["lactose_free"],
+            delivery_reliability=0.99,
+            stock=100,
+        )
+        self.client.supplier = SimpleNamespace(
+            transport=None,
+            data_dir=Path(__file__).resolve().parent,
+            catalog=lambda: (yoghurt, milk),
+            product_by_id=lambda pid: {"YOG-1": yoghurt, "MILK-1": milk}.get(pid),
+            explicit_substitutes=lambda pid: [],
+            check_batch_availability=lambda *a, **k: ({}, "2026-11-15T07:00:00Z"),
+        )
+        matches = self.client.search_products("20 L of banana yogurt")
+        self.assertTrue(any(m.product_id == "YOG-1" for m in matches))
+
+        # Multiple schedules + unmatchable schedule resilience
+        self.client.create_schedule(CreateScheduleRequest(prompt="20 L of banana yogurt", cadence="daily", run_time="07:00"))
+        self.client.create_schedule(CreateScheduleRequest(prompt="10 L milk", cadence="daily", run_time="07:15"))
+        self.client.create_schedule(CreateScheduleRequest(prompt="nonexistent unicorn dust 5 kg", cadence="daily", run_time="07:30"))
+        adv = self.client.advance_clock(ClockAdvanceRequest(days=1))
+        self.assertEqual(len(adv.executed_runs), 3)
+        self.assertEqual([r.runs_completed for r in adv.rules], [1, 1, 1])
+        self.assertEqual(sum(1 for r in adv.executed_runs if not r.execution.rejected), 2)
+        self.assertTrue(any(r.execution.rejected for r in adv.executed_runs))
+        for r in adv.executed_runs:
+            if r.execution.order is not None:
+                self.assertEqual(r.execution.order.created_at, r.scheduled_for)
+                self.assertEqual(r.execution.order.updated_at, r.scheduled_for)
+        for r in adv.rules:
+            self.assertGreater(r.next_run_at, adv.simulated_now)
+
 
 if __name__ == "__main__":
     unittest.main()

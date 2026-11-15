@@ -34,6 +34,13 @@ async def procurement_error(_request: Request, exc: ProcurementError):
     return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
 
 
+@app.exception_handler(Exception)
+async def unhandled_error(_request: Request, exc: Exception):
+    import traceback
+    traceback.print_exc()
+    return JSONResponse(status_code=500, content={"detail": f"Purchasing service error ({type(exc).__name__}): {exc}"})
+
+
 @app.get("/api/search_products")
 def search_products(query: SearchTerm, priority_mode: PriorityMode | None = None) -> list[Product]:
     return client.search_products(query, priority_mode=priority_mode)

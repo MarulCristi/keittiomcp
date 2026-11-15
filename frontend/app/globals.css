@@ -249,7 +249,7 @@ button:focus-visible, input:focus-visible, label:has(input:focus-visible) {
 .request-planner h2 { font-size: 18px; font-weight: 750; }
 .request-fields { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; margin-top: 16px; }
 .request-fields label { display: grid; gap: 5px; font-size: 12px; font-weight: 700; }
-.request-fields input { min-width: 0; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: white; }
+.request-fields input, .request-fields select { min-width: 0; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font: inherit; min-height: 40px; }
 .request-planner .primary-button { margin-top: 12px; }
 .product-comparison { color: var(--muted); font-size: 11px; margin-top: 12px; }
 .product-comparison > div { margin-top: 5px; }
@@ -272,7 +272,7 @@ button:focus-visible, input:focus-visible, label:has(input:focus-visible) {
 .agent-permissions label { display: inline-flex; align-items: center; gap: 5px; padding: 7px; border: 1px solid var(--line); border-radius: 7px; text-transform: capitalize; }
 .agent-permissions input { accent-color: var(--accent); }
 .agent-field { display: grid; gap: 6px; margin-top: 18px; font-weight: 650; font-size: 13px; }
-.agent-field input, .agent-field select, .event-filters input, .event-filters select { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--slate-200); border-radius: 8px; background: white; font-weight: 400; color: var(--ink); }
+.agent-field input, .agent-field select, .event-filters input, .event-filters select { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--slate-200); border-radius: 8px; background: var(--surface); font-weight: 400; color: var(--ink); }
 .agent-card .primary-button { width: 100%; margin-top: 16px; }
 .agent-card .error { margin-top: 10px; }
 .decision-feedback { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }

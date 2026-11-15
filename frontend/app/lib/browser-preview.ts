@@ -26,11 +26,11 @@ type Line = { product_id: string; quantity: number; is_substitution?: boolean; s
 type OrderRequest = { items: Line[]; agent_id?: string; requested_date?: string | null };
 
 const catalog: CatalogProduct[] = [
-  { product_id: "AIMO-101", name: "Lactose-free milk", unit: "1 L carton", volume: 1, category: "milk", unit_price_cents: 125, stock: 5000, allergens: ["milk"], dietary_claims: ["Lactose-free"], delivery_reliability: 0.99, sustainability_labels: ["Illustrative origin label"] },
-  { product_id: "AIMO-102", name: "Mozzarella", unit: "1 kg pack", volume: 1, category: "cheese", unit_price_cents: 400, stock: 200, allergens: ["milk"], dietary_claims: [], delivery_reliability: 0.97, sustainability_labels: [] },
-  { product_id: "AIMO-201", name: "Lactose-free cooking cream", unit: "1 L carton", volume: 1, category: "cream", unit_price_cents: 345, stock: 24, allergens: ["milk"], dietary_claims: ["Lactose-free"], delivery_reliability: 0.98, sustainability_labels: [] },
-  { product_id: "AIMO-202", name: "Oat cooking alternative", unit: "1 L carton", volume: 1, category: "cream", unit_price_cents: 295, stock: 80, allergens: ["gluten"], dietary_claims: ["Plant-based"], delivery_reliability: 0.94, sustainability_labels: [] },
-  { product_id: "AIMO-301", name: "Cooking cream", unit: "1 L carton", volume: 1, category: "cream", unit_price_cents: 310, stock: 8, allergens: ["milk"], dietary_claims: [], delivery_reliability: 0.86, sustainability_labels: [] },
+  { product_id: "AIMO-101", name: "Lactose-free milk", unit: "1 L carton", volume: 1, category: "milk", unit_price_cents: 125, stock: 5000, allergens: ["milk"], dietary_claims: ["Lactose-free"], delivery_reliability: 0.99, sustainability_labels: ["Illustrative origin label"], ingredients_text: "Pasteurized skimmed MILK, lactase enzyme, vitamin D." },
+  { product_id: "AIMO-102", name: "Mozzarella", unit: "1 kg pack", volume: 1, category: "cheese", unit_price_cents: 400, stock: 200, allergens: ["milk"], dietary_claims: [], delivery_reliability: 0.97, sustainability_labels: [], ingredients_text: "Pasteurized MILK, salt, starter culture, microbial rennet." },
+  { product_id: "AIMO-201", name: "Lactose-free cooking cream", unit: "1 L carton", volume: 1, category: "cream", unit_price_cents: 345, stock: 24, allergens: ["milk"], dietary_claims: ["Lactose-free"], delivery_reliability: 0.98, sustainability_labels: [], ingredients_text: "CREAM, modified corn starch, stabilizer (guar gum), lactase enzyme." },
+  { product_id: "AIMO-202", name: "Oat cooking alternative", unit: "1 L carton", volume: 1, category: "cream", unit_price_cents: 295, stock: 80, allergens: ["gluten"], dietary_claims: ["Plant-based"], delivery_reliability: 0.94, sustainability_labels: [], ingredients_text: "Water, OAT base (10%), rapeseed oil, emulsifier, stabilizer, salt." },
+  { product_id: "AIMO-301", name: "Cooking cream", unit: "1 L carton", volume: 1, category: "cream", unit_price_cents: 310, stock: 8, allergens: ["milk"], dietary_claims: [], delivery_reliability: 0.86, sustainability_labels: [], ingredients_text: "CREAM (15% fat), skimmed MILK, thickener." },
 ];
 
 // In-memory fixture adapter. Every request stays in this module; it never calls fetch.
@@ -192,10 +192,24 @@ export function createBrowserPreview() {
       };
     }
     const top = safeMatches[0] ?? catalog[0];
-    const order = createOrder({ agent_id: req.agent_id ?? "kitchen", items: [{ product_id: top.product_id, quantity: 10 }], requested_date: date });
+    const caller = actor(req.agent_id ?? "kitchen");
+    const inventoryAuditor = agents.find((a) => a.id === "inventory" && a.status === "connected" && a.permissions.includes("prepare"));
+    if (inventoryAuditor) {
+      record(inventoryAuditor, "Stock & pack-math audit", "completed", `Verified live stock for '${req.prompt}' (${stock(top)} available).`);
+    }
+    const estimatedTotalCents = 10 * (top.unit_price_cents ?? 0);
+    let executor = caller;
+    if (caller.id === "kitchen" && estimatedTotalCents > caller.spending_limit_cents) {
+      const purchasingAgent = agents.find((a) => a.id === "purchasing" && a.status === "connected" && a.permissions.includes("purchase"));
+      if (purchasingAgent) {
+        executor = purchasingAgent;
+        record(caller, "Delegated bulk order", "completed", `Handed over €${(estimatedTotalCents / 100).toFixed(2)} order to ${purchasingAgent.name}.`);
+      }
+    }
+    const order = createOrder({ agent_id: executor.id, items: [{ product_id: top.product_id, quantity: 10 }], requested_date: date });
     return {
       prompt: req.prompt,
-      agent: actor(req.agent_id ?? "kitchen"),
+      agent: structuredClone(executor),
       priority_mode: activeModes[0],
       priority_modes: activeModes,
       requested_date: date,
@@ -350,18 +364,29 @@ export function createBrowserPreview() {
             ? Math.max(60, Math.ceil((new Date(enabled[0].next_run_at).getTime() - currentSim.getTime()) / 1000) + 60)
             : 86400;
         }
-        offsetSeconds += deltaSecs;
+        const targetOffset = offsetSeconds + deltaSecs;
+        offsetSeconds = targetOffset;
         const targetTime = simulatedNow().getTime();
         const executed: ScheduledRunExecution[] = [];
-        for (let step = 0; step < 14; step++) {
+        const inventoryAuditor = agents.find((a) => a.id === "inventory" && a.status === "connected" && a.permissions.includes("search"));
+        const purchasingRunner = agents.find((a) => a.id === "purchasing" && a.status === "connected" && a.permissions.includes("purchase"));
+        for (let step = 0; step < 50; step++) {
           const due = schedules
             .filter((r) => r.enabled && new Date(r.next_run_at).getTime() <= targetTime)
-            .sort((a, b) => a.next_run_at.localeCompare(b.next_run_at));
+            .sort((a, b) => a.next_run_at.localeCompare(b.next_run_at) || a.id.localeCompare(b.id));
           if (!due.length) break;
           const rule = due[0];
           const scheduledFor = rule.next_run_at;
           const deliveryDate = new Date(new Date(scheduledFor).getTime() + 86400000).toISOString().slice(0, 10);
-          const execution = executePreviewTrade({ prompt: rule.prompt, requested_date: deliveryDate });
+          offsetSeconds = Math.round((new Date(scheduledFor).getTime() - Date.now()) / 1000);
+          if (inventoryAuditor) {
+            record(inventoryAuditor, `Pre-schedule stock check (${rule.id})`, "completed", `Audited availability before recurring buy '${rule.prompt}'.`);
+          }
+          const execution = executePreviewTrade({
+            agent_id: purchasingRunner?.id ?? "kitchen",
+            prompt: rule.prompt,
+            requested_date: deliveryDate,
+          });
           rule.last_run_at = scheduledFor;
           rule.last_order_id = execution.order?.id ?? null;
           rule.last_status = execution.rejected ? "rejected" : (execution.order?.status ?? "completed");
@@ -370,6 +395,10 @@ export function createBrowserPreview() {
           if (rule.cadence === "once") rule.enabled = false;
           else rule.next_run_at = nextRunTimestamp(rule.cadence, rule.run_time, new Date(new Date(scheduledFor).getTime() + 60000));
           executed.push({ rule: structuredClone(rule), scheduled_for: scheduledFor, execution });
+        }
+        offsetSeconds = targetOffset;
+        if (!executed.length && deltaSecs >= 3600 && inventoryAuditor) {
+          record(inventoryAuditor, "Autonomous par-level stock check", "completed", "Inspected kitchen inventory readiness while advancing simulated time.");
         }
         response = { ...scheduleSnapshot(), executed_runs: executed } satisfies ClockAdvanceResponse;
       }

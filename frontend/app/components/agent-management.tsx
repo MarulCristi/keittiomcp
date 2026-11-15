@@ -1,9 +1,15 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Bot, Check } from "lucide-react";
 import { errorMessage, type ApiClient } from "../lib/purchasing";
 import type { Agent } from "../lib/browser-preview";
+
+const AGENT_ROLES: Record<string, string> = {
+  kitchen: "Intake, allergen filtering & everyday orders up to €500.",
+  inventory: "Autonomous stock audits, pack math & shortage detection.",
+  purchasing: "High-limit execution, quote locks & scheduled replenishment.",
+};
 
 function AgentCard({ agent, request, onSaved, busy, onBusy }: { agent: Agent; request: ApiClient; onSaved: () => void; busy: boolean; onBusy: (value: string) => void }) {
   const [permissions, setPermissions] = useState(agent.permissions);
@@ -28,7 +34,7 @@ function AgentCard({ agent, request, onSaved, busy, onBusy }: { agent: Agent; re
   }
   return <article className="panel agent-card">
     <div className="control-heading"><h2><Bot size={20} />{agent.name}</h2><span className={`status ${agent.status === "paused" ? "pending" : ""}`}><span />{agent.status}</span></div>
-    <p className="review-caption">Last activity {agent.last_active ? new Date(agent.last_active).toLocaleTimeString("en-GB") : "No activity yet"}</p>
+    <p className="review-caption">{AGENT_ROLES[agent.id] ?? "Autonomous purchasing worker."} · Last activity {agent.last_active ? new Date(agent.last_active).toLocaleTimeString("en-GB") : "No activity yet"}</p>
     <form onSubmit={save}>
       <fieldset disabled={busy}>
         <legend>Allowed actions</legend>
@@ -47,6 +53,11 @@ function AgentCard({ agent, request, onSaved, busy, onBusy }: { agent: Agent; re
 
 export default function AgentManagement({ agents, request, onChanged, busy, onBusy }: { agents: Agent[]; request: ApiClient; onChanged: () => void; busy: boolean; onBusy: (value: string) => void }) {
   const [notice, setNotice] = useState("");
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 3500);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
   return <section aria-label="Agent management">
     <p className="decision-feedback" role="status">{notice && <><Check size={14} /> {notice}</>}</p>
     <div className="agent-grid">{agents.map((agent) => <AgentCard key={`${agent.id}:${agent.last_active}`} agent={agent} request={request} busy={busy} onBusy={onBusy}

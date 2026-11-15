@@ -67,7 +67,7 @@ export default function RequestPlanner({ request = api, connected, busy, onBusy,
           <label>Ingredient and requirements<input required maxLength={120} value={query} placeholder="Lactose-free milk" onChange={(event) => { setQuery(event.target.value); setPlan(null); }} /></label>
           <label>Total litres or kilograms<input required type="number" min="0.01" max="100000" step="any" value={target} onChange={(event) => { setTarget(event.target.value); setPlan(null); }} /></label>
           <label>Kitchen purchasing priority
-            <select className="agent-field" style={{ marginTop: 0, width: "100%", border: "1px solid #bdcfd7", borderRadius: 6, padding: "10px 12px", minHeight: 42, background: "#fff" }} value={priority} onChange={(event) => { setPriority(event.target.value as PriorityMode); setPlan(null); }}>
+            <select value={priority} onChange={(event) => { setPriority(event.target.value as PriorityMode); setPlan(null); }}>
               <option value="balanced">Balanced (Reliability + Carbon + Price)</option>
               <option value="low_carbon">Lowest Carbon Footprint (Sustainability First)</option>
               <option value="lowest_price">Lowest Price / Cheapness (Budget First)</option>
@@ -103,6 +103,7 @@ export default function RequestPlanner({ request = api, connected, busy, onBusy,
         <p>{option.tradeoff_explanation}</p>
         <p className="review-caption">{option.can_fulfill_full_volume ? "Reported to cover the requested volume" : `Full volume unconfirmed · reported shortfall ${option.shortfall_packs} sales units`}</p>
         <p className="review-caption">Dietary claims: {option.product.dietary_claims?.join(", ") || "Unconfirmed"} · Allergens: {option.product.allergens?.join(", ") || "None listed or unknown"}</p>
+        {option.product.ingredients_text && <p className="review-caption">Ingredients: {option.product.ingredients_text}</p>}
         {excluded.length > 0 && (option.product.allergens == null || excluded.some((name) => option.product.allergens?.includes(name))) && <p className="field-error">This option cannot be selected because its allergen information does not confirm your exclusions.</p>}
         <button type="button" className="secondary-button" disabled={busy || (excluded.length > 0 && (option.product.allergens == null || excluded.some((name) => option.product.allergens?.includes(name))))} onClick={() => onSelect(option.product, option.recommended_packs, plan.requested_date)}>Review this option</button>
       </article>)}</div>
