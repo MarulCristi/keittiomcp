@@ -1082,6 +1082,15 @@ export default function Dashboard() {
         {actionError && <p className="error workspace-error" role="alert">{actionError}</p>}
         {decisionNotice && view !== "approvals" && <p className="decision-feedback" role="status">{decisionNotice}</p>}
 
+        {view === "overview" && <div className="control-content overview-content">
+          <dl className="metric-grid">
+            <div className="panel metric-card"><div className="metric-icon sky"><AgentIcon /></div><dt>Connected agents</dt><dd>{preview || workspace ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : workspace ? "Verified external trade agents" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon blue"><CartIcon /></div><dt>Orders updated today</dt><dd>{workspace ? changedToday : "—"}</dd><small>Helsinki time</small><button type="button" className="text-button" onClick={() => setView("activity")}>View activity <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon turquoise"><ApprovalIcon /></div><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><small>{pending.length ? "A decision needs your attention" : "No pending decisions"}</small><button type="button" className="primary-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={16} /></button></div>
+            <div className="panel metric-card"><div className="metric-icon orange"><ApprovedIcon /></div><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small><button type="button" className="text-button" onClick={() => setView("policies")}>View policies <ArrowRight size={16} /></button></div>
+          </dl>
+        </div>}
+
         {view === "agents" && (preview || Boolean(workspace)) && <AgentManagement agents={agents} request={request} busy={Boolean(activeAction) || sending} onBusy={setActiveAction} onChanged={() => void loadWorkspace(undefined, true)} />}
         {view === "agents" && !preview && !workspace && <section className="panel control-empty">
           <Bot size={24} aria-hidden="true" />
@@ -1491,15 +1500,6 @@ export default function Dashboard() {
             })()}
           </aside>
         </div>
-
-        {view === "overview" && <div className="control-content overview-content overview-metrics-below">
-          <dl className="metric-grid">
-            <div className="panel metric-card"><div className="metric-icon sky"><AgentIcon /></div><dt>Connected agents</dt><dd>{preview || workspace ? agents.filter((agent) => agent.status === "connected").length : "—"}</dd><small>{preview ? "Simulated agent connections" : workspace ? "Verified external trade agents" : "Agent data unavailable"}</small><button type="button" className="text-button" onClick={() => setView("agents")}>View agents <ArrowRight size={16} /></button></div>
-            <div className="panel metric-card"><div className="metric-icon blue"><CartIcon /></div><dt>Orders updated today</dt><dd>{workspace ? changedToday : "—"}</dd><small>Helsinki time</small><button type="button" className="text-button" onClick={() => setView("activity")}>View activity <ArrowRight size={16} /></button></div>
-            <div className="panel metric-card"><div className="metric-icon turquoise"><ApprovalIcon /></div><dt>Awaiting approval</dt><dd>{workspace ? pending.length : "—"}</dd><small>{pending.length ? "A decision needs your attention" : "No pending decisions"}</small><button type="button" className="primary-button" onClick={() => setView("approvals")}>Open Approval Centre <ArrowRight size={16} /></button></div>
-            <div className="panel metric-card"><div className="metric-icon orange"><ApprovedIcon /></div><dt>Automatically approved</dt><dd>{workspace ? automatic : "—"}</dd><small>Across recorded orders</small><button type="button" className="text-button" onClick={() => setView("policies")}>View policies <ArrowRight size={16} /></button></div>
-          </dl>
-        </div>}
 
             {view === "policies" && <section className="panel side-panel policy-panel" aria-labelledby="guardrails-title">
               <div className="section-heading">

@@ -196,8 +196,7 @@ button:disabled { opacity: .5; }
 .site-footer { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); padding-block: 0 28px; font-size: 12px; }
 .site-footer span:first-child { font-weight: 800; color: var(--accent-dark); }
 .shell { min-height: calc(100dvh - 165px); padding-bottom: 36px; }
-.home-purchasing { margin-top: 8px; grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr); }
-.overview-metrics-below { margin-top: 44px; }
+.home-purchasing { margin-top: 24px; grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr); }
 .home-purchasing .chat-panel { position: static; min-height: 780px; height: clamp(780px, calc(100dvh - 140px), 960px); }
 .message-body { max-width: min(98%, 820px); width: 100%; }
 .bubble.welcome { max-width: 580px; }
