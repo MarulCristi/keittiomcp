@@ -1075,7 +1075,8 @@ export default function Dashboard() {
         </div>}
 
         {workspaceError && <div className="connection-notice" role="status">
-          <div><strong>{workspace ? "Showing the last loaded workspace" : "The purchasing service is disconnected"}</strong><p>Use Refresh workspace to retry the connection.</p></div>
+          <div><strong>{workspace ? "Showing the last loaded workspace" : "The purchasing service is disconnected"}</strong><p>Use Refresh workspace to retry the connection, or try the simulated browser preview.</p></div>
+          {!workspace && !preview && <button type="button" className="secondary-button" onClick={() => switchMode(true)}>Try in browser preview</button>}
           {!workspace && view !== "overview" && <button type="button" className="secondary-button" onClick={() => { setShowSamples(true); setView("overview"); }}>Explore sample products</button>}
         </div>}
         {actionError && <p className="error workspace-error" role="alert">{actionError}</p>}
